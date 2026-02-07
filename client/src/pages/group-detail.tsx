@@ -452,24 +452,6 @@ function SettingsTab({ chatId }: { chatId: string }) {
         </CardContent>
       </Card>
 
-      <Card>
-        <CardHeader>
-          <CardTitle>AI Moderator</CardTitle>
-          <CardDescription>Use AI to automatically detect and remove inappropriate content</CardDescription>
-        </CardHeader>
-        <CardContent>
-          <div className="flex items-center justify-between gap-4">
-            <Label htmlFor="ai-moderator">Enable AI Moderator</Label>
-            <Switch
-              id="ai-moderator"
-              data-testid="switch-ai-moderator"
-              checked={merged.aiModeratorEnabled ?? false}
-              onCheckedChange={(val) => updateField("aiModeratorEnabled", val)}
-            />
-          </div>
-        </CardContent>
-      </Card>
-
       <div className="flex justify-end pb-6">
         <Button
           onClick={handleSave}

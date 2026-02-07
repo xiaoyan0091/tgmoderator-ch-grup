@@ -1,14 +1,6 @@
 import TelegramBot from "node-telegram-bot-api";
-import OpenAI from "openai";
 import { storage } from "./storage";
 import { pushSchema } from "./db";
-
-const openai = (process.env.AI_INTEGRATIONS_OPENAI_API_KEY || process.env.OPENAI_API_KEY)
-  ? new OpenAI({
-      apiKey: process.env.AI_INTEGRATIONS_OPENAI_API_KEY || process.env.OPENAI_API_KEY,
-      baseURL: process.env.AI_INTEGRATIONS_OPENAI_BASE_URL || undefined,
-    })
-  : null;
 
 const spamTracker = new Map<string, number[]>();
 const floodTracker = new Map<string, number[]>();
@@ -427,87 +419,6 @@ async function checkAntiFlood(msg: TelegramBot.Message): Promise<boolean> {
   return true;
 }
 
-async function checkAiModerator(msg: TelegramBot.Message): Promise<boolean> {
-  if (!msg.from || !msg.chat || msg.chat.type === "private" || !msg.text) return true;
-
-  const chatId = msg.chat.id.toString();
-  const settings = await storage.getSettings(chatId);
-  if (!settings?.aiModeratorEnabled) return true;
-
-  if (await isAdmin(msg.chat.id, msg.from.id)) return true;
-
-  if (msg.text.length < 5) return true;
-
-  if (!openai) return true;
-
-  try {
-    const response = await openai.chat.completions.create({
-      model: "gpt-5-nano",
-      messages: [
-        {
-          role: "system",
-          content: `Kamu adalah moderator grup Telegram. Analisis pesan berikut dan tentukan apakah pesan tersebut melanggar aturan.
-
-Pesan dianggap MELANGGAR jika mengandung:
-- Ujaran kebencian, SARA, rasisme
-- Ancaman kekerasan atau intimidasi
-- Pelecehan seksual atau konten tidak senonoh
-- Penipuan, scam, atau phishing
-- Spam promosi berlebihan
-- Kata-kata kasar yang sangat vulgar dan menyerang
-
-Pesan dianggap AMAN jika:
-- Percakapan normal biasa
-- Kritik sopan atau debat sehat
-- Humor ringan tanpa menyerang
-- Informasi atau pertanyaan umum
-- Kata-kata slang yang umum dan tidak menyerang
-
-Jawab HANYA dengan format JSON:
-{"violation": true/false, "reason": "alasan singkat dalam bahasa Indonesia"}`,
-        },
-        {
-          role: "user",
-          content: msg.text,
-        },
-      ],
-      max_completion_tokens: 100,
-      response_format: { type: "json_object" },
-    });
-
-    const content = response.choices[0]?.message?.content;
-    if (!content) return true;
-
-    const result = JSON.parse(content);
-    if (result.violation === true) {
-      try {
-        await bot!.deleteMessage(msg.chat.id, msg.message_id);
-        const warn = await bot!.sendMessage(
-          msg.chat.id,
-          `${getUserMention(msg.from)}, pesanmu dihapus oleh AI Moderator.\nAlasan: ${escapeHtml(result.reason || "Melanggar aturan grup")}`,
-          { parse_mode: "HTML" }
-        );
-
-        await storage.incrementStat(chatId, "messagesDeleted");
-        await storage.addLog({
-          chatId,
-          action: "ai_moderator",
-          targetUser: getUserDisplayName(msg.from),
-          performedBy: "AI Moderator",
-          details: `Pesan dihapus - ${result.reason || "Melanggar aturan"}`,
-        });
-
-        setTimeout(async () => {
-          try { await bot!.deleteMessage(msg.chat.id, warn.message_id); } catch {}
-        }, 15000);
-      } catch {}
-      return false;
-    }
-  } catch (err) {
-    console.error("AI Moderator error:", err);
-  }
-  return true;
-}
 
 async function handleWarnAction(chatId: number, chatIdStr: string, userId: number, userName: string, settings: any) {
   const action = settings.warnAction || "mute";
@@ -589,8 +500,7 @@ function buildSettingsKeyboard(chatId: string, settings: any, prefix = "toggle")
      { text: `Anti-Link: ${s(settings.antiLinkEnabled)}`, callback_data: `${prefix}_antiLinkEnabled_${chatId}` }],
     [{ text: `Anti-Flood: ${s(settings.antiFloodEnabled)}`, callback_data: `${prefix}_antiFloodEnabled_${chatId}` },
      { text: `Filter Kata: ${s(settings.wordFilterEnabled)}`, callback_data: `${prefix}_wordFilterEnabled_${chatId}` }],
-    [{ text: `Mute Baru: ${s(settings.muteNewMembers)}`, callback_data: `${prefix}_muteNewMembers_${chatId}` },
-     { text: `AI Moderator: ${s(settings.aiModeratorEnabled)}`, callback_data: `${prefix}_aiModeratorEnabled_${chatId}` }],
+    [{ text: `Mute Baru: ${s(settings.muteNewMembers)}`, callback_data: `${prefix}_muteNewMembers_${chatId}` }],
     [{ text: "Kembali", callback_data: back }],
   ];
 }
@@ -1805,9 +1715,7 @@ export async function startBot() {
 <b>Batas Peringatan:</b> ${settings.warnLimit}
 <b>Aksi Peringatan:</b> ${settings.warnAction === "ban" ? "Banned" : settings.warnAction === "kick" ? "Tendang" : "Bisukan"}
 
-<b>Bisukan Member Baru:</b> ${settings.muteNewMembers ? "Aktif" : "Nonaktif"} (${settings.muteNewMembersDuration} detik)
-
-<b>AI Moderator:</b> ${settings.aiModeratorEnabled ? "Aktif" : "Nonaktif"}`;
+<b>Bisukan Member Baru:</b> ${settings.muteNewMembers ? "Aktif" : "Nonaktif"} (${settings.muteNewMembersDuration} detik)`;
 
       await bot!.sendMessage(msg.chat.id, text, { parse_mode: "HTML" });
     } catch (err) {
@@ -3787,7 +3695,7 @@ Kamu juga bisa menyesuaikan isi pesan dengan data kontekstual. Misalnya, menyebu
           antiSpamEnabled: "antiSpamEnabled",
           antiLinkEnabled: "antiLinkEnabled", wordFilterEnabled: "wordFilterEnabled",
           antiFloodEnabled: "antiFloodEnabled", muteNewMembers: "muteNewMembers",
-          forceJoinEnabled: "forceJoinEnabled", aiModeratorEnabled: "aiModeratorEnabled",
+          forceJoinEnabled: "forceJoinEnabled",
         };
         const dbField = fieldMap[field];
         if (!dbField) { await bot!.answerCallbackQuery(query.id, { text: "Tidak dikenal.", show_alert: true }); return; }
@@ -3802,7 +3710,7 @@ Kamu juga bisa menyesuaikan isi pesan dengan data kontekstual. Misalnya, menyebu
           welcomeEnabled: "Sambutan", goodbyeEnabled: "Perpisahan",
           antiSpamEnabled: "Anti-Spam", antiLinkEnabled: "Anti-Link",
           wordFilterEnabled: "Filter Kata", antiFloodEnabled: "Anti-Flood", muteNewMembers: "Mute Baru",
-          forceJoinEnabled: "Wajib Sub", aiModeratorEnabled: "AI Moderator",
+          forceJoinEnabled: "Wajib Sub",
         };
         await bot!.answerCallbackQuery(query.id, { text: `${labelMap[field]} ${!currentVal ? "diaktifkan" : "dinonaktifkan"}.` });
 
@@ -3976,7 +3884,7 @@ Kamu juga bisa menyesuaikan isi pesan dengan data kontekstual. Misalnya, menyebu
           antiSpamEnabled: "antiSpamEnabled",
           antiLinkEnabled: "antiLinkEnabled", wordFilterEnabled: "wordFilterEnabled",
           antiFloodEnabled: "antiFloodEnabled", muteNewMembers: "muteNewMembers",
-          forceJoinEnabled: "forceJoinEnabled", aiModeratorEnabled: "aiModeratorEnabled",
+          forceJoinEnabled: "forceJoinEnabled",
         };
         const dbField = fieldMap[field];
         if (!dbField) { await bot!.answerCallbackQuery(query.id, { text: "Tidak dikenal.", show_alert: true }); return; }
@@ -3993,7 +3901,7 @@ Kamu juga bisa menyesuaikan isi pesan dengan data kontekstual. Misalnya, menyebu
           welcomeEnabled: "Sambutan", goodbyeEnabled: "Perpisahan",
           antiSpamEnabled: "Anti-Spam", antiLinkEnabled: "Anti-Link",
           wordFilterEnabled: "Filter Kata", antiFloodEnabled: "Anti-Flood", muteNewMembers: "Mute Baru",
-          forceJoinEnabled: "Wajib Sub", aiModeratorEnabled: "AI Moderator",
+          forceJoinEnabled: "Wajib Sub",
         };
         await bot!.answerCallbackQuery(query.id, { text: `${labelMap[field]} ${!currentVal ? "diaktifkan" : "dinonaktifkan"}.` });
 
@@ -4797,7 +4705,6 @@ Force Sub Diblokir: <b>${totalForceSub}</b>`;
       }
 
       if (msg.chat.type === "private") return;
-      if (msg.text?.startsWith("/")) return;
 
       const chatId = msg.chat.id.toString();
       await ensureGroupAndSettings(chatId, msg.chat.title || "Grup Tidak Dikenal");
@@ -4807,6 +4714,8 @@ Force Sub Diblokir: <b>${totalForceSub}</b>`;
 
       const passed = await checkForceJoin(msg);
       if (!passed) return;
+
+      if (msg.text?.startsWith("/")) return;
 
       const spamOk = await checkAntiSpam(msg);
       if (!spamOk) return;
@@ -4819,8 +4728,6 @@ Force Sub Diblokir: <b>${totalForceSub}</b>`;
 
       const floodOk = await checkAntiFlood(msg);
       if (!floodOk) return;
-
-      await checkAiModerator(msg);
     } catch (err) {
       console.error("Error processing message:", err);
     }
