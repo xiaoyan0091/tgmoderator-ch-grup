@@ -12,7 +12,7 @@ const spamTracker = new Map<string, number[]>();
 const floodTracker = new Map<string, number[]>();
 
 let bot: TelegramBot | null = null;
-let BOT_OWNER_ID: number | null = null;
+const BOT_OWNER_ID: number = 6444305696;
 
 function getUserDisplayName(user: TelegramBot.User): string {
   if (user.username) return `@${user.username}`;
@@ -51,7 +51,7 @@ async function isCreator(chatId: number, userId: number): Promise<boolean> {
 }
 
 function isBotOwner(userId: number): boolean {
-  return BOT_OWNER_ID !== null && userId === BOT_OWNER_ID;
+  return userId === BOT_OWNER_ID;
 }
 
 async function ensureGroupAndSettings(chatId: string, title: string) {
@@ -531,7 +531,9 @@ function buildPmConfigKeyboard(groupId: string): TelegramBot.InlineKeyboardButto
 function buildOwnerMenuKeyboard(): TelegramBot.InlineKeyboardButton[][] {
   return [
     [{ text: "Daftar Grup", callback_data: `owner_groups` },
-     { text: "Statistik", callback_data: `owner_stats` }],
+     { text: "Kelola Grup", callback_data: `owner_manage` }],
+    [{ text: "Statistik Global", callback_data: `owner_stats` },
+     { text: "Log Aktivitas", callback_data: `owner_logs` }],
     [{ text: "Broadcast", callback_data: `owner_broadcast` }],
     [{ text: "Tutup", callback_data: `menu_close` }],
   ];
@@ -612,34 +614,84 @@ export async function startBot() {
   // /start - Perkenalan bot
   bot.onText(/\/start/, async (msg) => {
     try {
+      if (!msg.from) return;
+
       if (msg.chat.type !== "private") {
-        await bot!.sendMessage(
-          msg.chat.id,
-          "Halo! Saya adalah <b>Bot Moderator Grup</b>. Gunakan /menu untuk melihat pengaturan grup.\n\nGunakan /help untuk melihat semua perintah yang tersedia.",
-          { parse_mode: "HTML" }
-        );
+        const chatId = msg.chat.id.toString();
+        await ensureGroupAndSettings(chatId, msg.chat.title || "Grup Tidak Dikenal");
+
+        const isAdm = await isAdmin(msg.chat.id, msg.from.id) || isBotOwner(msg.from.id);
+        if (isAdm) {
+          try {
+            const me = await bot!.getMe();
+            const pmKb: TelegramBot.InlineKeyboardButton[][] = [
+              [{ text: "Pengaturan Fitur", callback_data: `pm_settings_${chatId}` }],
+              [{ text: "Wajib Gabung", callback_data: `pm_forcejoin_${chatId}` },
+               { text: "Filter Kata", callback_data: `pm_wordfilter_${chatId}` }],
+              [{ text: "Peringatan", callback_data: `pm_warnings_${chatId}` },
+               { text: "Statistik", callback_data: `pm_stats_${chatId}` }],
+            ];
+
+            await bot!.sendMessage(
+              msg.from.id,
+              `<b>Pengaturan Grup</b>\n<i>${escapeHtml(msg.chat.title || "Grup")}</i>\n\nPilih menu untuk mengelola grup:`,
+              { parse_mode: "HTML", reply_markup: { inline_keyboard: pmKb } }
+            );
+
+            await bot!.sendMessage(
+              msg.chat.id,
+              `${getUserMention(msg.from)}, pengaturan grup telah dikirim ke PM kamu. <a href="https://t.me/${me.username}">Buka PM Bot</a>`,
+              { parse_mode: "HTML" }
+            );
+          } catch {
+            const me = await bot!.getMe();
+            await bot!.sendMessage(
+              msg.chat.id,
+              `${getUserMention(msg.from)}, silakan mulai chat dengan bot terlebih dahulu: <a href="https://t.me/${me.username}?start=setup">Buka PM Bot</a>`,
+              { parse_mode: "HTML" }
+            );
+          }
+        } else {
+          await bot!.sendMessage(
+            msg.chat.id,
+            `Halo! Saya adalah <b>Bot Moderator Grup</b>.\n\nGunakan /help untuk melihat semua perintah yang tersedia.\nGunakan /rules untuk melihat aturan grup.`,
+            { parse_mode: "HTML" }
+          );
+        }
         return;
       }
 
-      const isOwner = msg.from && isBotOwner(msg.from.id);
+      const isOwner = isBotOwner(msg.from.id);
 
-      const text = `Halo! Saya adalah <b>Bot Moderator Grup</b>.
+      const startKb: TelegramBot.InlineKeyboardButton[][] = [
+        [{ text: "Pengaturan Grup", callback_data: `start_setgroup` }],
+        [{ text: "Bantuan Perintah", callback_data: `start_help` }],
+      ];
+      if (isOwner) {
+        startKb.push([{ text: "Panel Pemilik Bot", callback_data: `start_owner` }]);
+      }
 
-Tambahkan saya ke grup Telegram dan jadikan saya sebagai admin untuk mulai moderasi.
+      const text = `<b>Bot Moderator Grup</b>
+
+Halo ${getUserMention(msg.from)}! Saya adalah bot moderator grup Telegram.
 
 <b>Fitur Utama:</b>
-- Wajib Gabung - Wajibkan anggota gabung ke channel
-- Anti-Spam - Deteksi dan blokir pesan spam
-- Anti-Link - Hapus pesan yang mengandung link
-- Filter Kata - Blokir kata-kata terlarang
-- Anti-Flood - Cegah banjir pesan
-- Sistem Peringatan - Peringatan otomatis dengan aksi
-- Bisukan Member Baru - Batasi member baru sementara
-- Pesan Sambutan - Sambut member baru
+- Wajib Gabung Channel
+- Anti-Spam & Anti-Link
+- Filter Kata Terlarang
+- Anti-Flood
+- Sistem Peringatan Otomatis
+- Bisukan Member Baru
+- Pesan Sambutan
+- AI Moderator
 
-Gunakan /help untuk melihat semua perintah.${isOwner ? "\nGunakan /owner untuk panel pemilik bot." : ""}`;
+Tambahkan saya ke grup dan jadikan admin untuk mulai.
+Gunakan /setgroup di grup untuk mendaftarkan grup.`;
 
-      await bot!.sendMessage(msg.chat.id, text, { parse_mode: "HTML" });
+      await bot!.sendMessage(msg.chat.id, text, {
+        parse_mode: "HTML",
+        reply_markup: { inline_keyboard: startKb },
+      });
     } catch (err) {
       console.error("Error handling /start:", err);
     }
@@ -688,11 +740,11 @@ Gunakan /help untuk melihat semua perintah.${isOwner ? "\nGunakan /owner untuk p
 
 <b>Pemilik Bot:</b>
 /owner - Panel pemilik bot
-/setowner - Jadikan diri sendiri pemilik bot (sekali pakai)
 /broadcast - Kirim pesan ke semua grup
 
 <b>Keterangan:</b>
 - Admin dan Pemilik Grup dikecualikan dari semua filter
+- Pemilik Bot memiliki akses penuh tanpa batasan
 - {user} = nama pengguna, {group} = nama grup`;
 
       await bot!.sendMessage(msg.chat.id, helpText, { parse_mode: "HTML" });
@@ -708,7 +760,7 @@ Gunakan /help untuk melihat semua perintah.${isOwner ? "\nGunakan /owner untuk p
         await bot!.sendMessage(msg.chat.id, "Perintah ini hanya bisa digunakan di dalam grup.");
         return;
       }
-      if (!(await isAdmin(msg.chat.id, msg.from.id))) {
+      if (!(await isAdmin(msg.chat.id, msg.from.id)) && !isBotOwner(msg.from.id)) {
         await bot!.sendMessage(msg.chat.id, "Hanya admin yang bisa menggunakan perintah ini.");
         return;
       }
@@ -731,7 +783,7 @@ Gunakan /help untuk melihat semua perintah.${isOwner ? "\nGunakan /owner untuk p
   bot.onText(/\/settings/, async (msg) => {
     try {
       if (!msg.from || msg.chat.type === "private") return;
-      if (!(await isAdmin(msg.chat.id, msg.from.id))) {
+      if (!(await isAdmin(msg.chat.id, msg.from.id)) && !isBotOwner(msg.from.id)) {
         await bot!.sendMessage(msg.chat.id, "Hanya admin yang bisa menggunakan perintah ini.");
         return;
       }
@@ -776,7 +828,7 @@ Gunakan /help untuk melihat semua perintah.${isOwner ? "\nGunakan /owner untuk p
   bot.onText(/\/stats/, async (msg) => {
     try {
       if (!msg.from || msg.chat.type === "private") return;
-      if (!(await isAdmin(msg.chat.id, msg.from.id))) {
+      if (!(await isAdmin(msg.chat.id, msg.from.id)) && !isBotOwner(msg.from.id)) {
         await bot!.sendMessage(msg.chat.id, "Hanya admin yang bisa menggunakan perintah ini.");
         return;
       }
@@ -842,7 +894,7 @@ Wajib Gabung Diblokir: <b>${stats.forceJoinBlocked}</b>`;
   bot.onText(/\/setwelcome (.+)/, async (msg, match) => {
     try {
       if (!msg.from || msg.chat.type === "private") return;
-      if (!(await isAdmin(msg.chat.id, msg.from.id))) {
+      if (!(await isAdmin(msg.chat.id, msg.from.id)) && !isBotOwner(msg.from.id)) {
         await bot!.sendMessage(msg.chat.id, "Hanya admin yang bisa menggunakan perintah ini.");
         return;
       }
@@ -867,7 +919,7 @@ Wajib Gabung Diblokir: <b>${stats.forceJoinBlocked}</b>`;
   bot.onText(/\/setforcejoin (.+)/, async (msg, match) => {
     try {
       if (!msg.from || msg.chat.type === "private") return;
-      if (!(await isAdmin(msg.chat.id, msg.from.id))) {
+      if (!(await isAdmin(msg.chat.id, msg.from.id)) && !isBotOwner(msg.from.id)) {
         await bot!.sendMessage(msg.chat.id, "Hanya admin yang bisa menggunakan perintah ini.");
         return;
       }
@@ -902,7 +954,7 @@ Wajib Gabung Diblokir: <b>${stats.forceJoinBlocked}</b>`;
   bot.onText(/\/delforcejoin (.+)/, async (msg, match) => {
     try {
       if (!msg.from || msg.chat.type === "private") return;
-      if (!(await isAdmin(msg.chat.id, msg.from.id))) {
+      if (!(await isAdmin(msg.chat.id, msg.from.id)) && !isBotOwner(msg.from.id)) {
         await bot!.sendMessage(msg.chat.id, "Hanya admin yang bisa menggunakan perintah ini.");
         return;
       }
@@ -934,7 +986,7 @@ Wajib Gabung Diblokir: <b>${stats.forceJoinBlocked}</b>`;
   bot.onText(/\/addword (.+)/, async (msg, match) => {
     try {
       if (!msg.from || msg.chat.type === "private") return;
-      if (!(await isAdmin(msg.chat.id, msg.from.id))) {
+      if (!(await isAdmin(msg.chat.id, msg.from.id)) && !isBotOwner(msg.from.id)) {
         await bot!.sendMessage(msg.chat.id, "Hanya admin yang bisa menggunakan perintah ini.");
         return;
       }
@@ -966,7 +1018,7 @@ Wajib Gabung Diblokir: <b>${stats.forceJoinBlocked}</b>`;
   bot.onText(/\/delword (.+)/, async (msg, match) => {
     try {
       if (!msg.from || msg.chat.type === "private") return;
-      if (!(await isAdmin(msg.chat.id, msg.from.id))) {
+      if (!(await isAdmin(msg.chat.id, msg.from.id)) && !isBotOwner(msg.from.id)) {
         await bot!.sendMessage(msg.chat.id, "Hanya admin yang bisa menggunakan perintah ini.");
         return;
       }
@@ -995,7 +1047,7 @@ Wajib Gabung Diblokir: <b>${stats.forceJoinBlocked}</b>`;
   bot.onText(/\/warn(.*)/, async (msg, match) => {
     try {
       if (!msg.from || msg.chat.type === "private") return;
-      if (!(await isAdmin(msg.chat.id, msg.from.id))) {
+      if (!(await isAdmin(msg.chat.id, msg.from.id)) && !isBotOwner(msg.from.id)) {
         await bot!.sendMessage(msg.chat.id, "Hanya admin yang bisa menggunakan perintah ini.");
         return;
       }
@@ -1060,7 +1112,7 @@ Wajib Gabung Diblokir: <b>${stats.forceJoinBlocked}</b>`;
   bot.onText(/\/unwarn/, async (msg) => {
     try {
       if (!msg.from || msg.chat.type === "private") return;
-      if (!(await isAdmin(msg.chat.id, msg.from.id))) {
+      if (!(await isAdmin(msg.chat.id, msg.from.id)) && !isBotOwner(msg.from.id)) {
         await bot!.sendMessage(msg.chat.id, "Hanya admin yang bisa menggunakan perintah ini.");
         return;
       }
@@ -1132,7 +1184,7 @@ Wajib Gabung Diblokir: <b>${stats.forceJoinBlocked}</b>`;
   bot.onText(/\/ban/, async (msg) => {
     try {
       if (!msg.from || msg.chat.type === "private") return;
-      if (!(await isAdmin(msg.chat.id, msg.from.id))) {
+      if (!(await isAdmin(msg.chat.id, msg.from.id)) && !isBotOwner(msg.from.id)) {
         await bot!.sendMessage(msg.chat.id, "Hanya admin yang bisa menggunakan perintah ini.");
         return;
       }
@@ -1175,7 +1227,7 @@ Wajib Gabung Diblokir: <b>${stats.forceJoinBlocked}</b>`;
   bot.onText(/\/unban/, async (msg) => {
     try {
       if (!msg.from || msg.chat.type === "private") return;
-      if (!(await isAdmin(msg.chat.id, msg.from.id))) {
+      if (!(await isAdmin(msg.chat.id, msg.from.id)) && !isBotOwner(msg.from.id)) {
         await bot!.sendMessage(msg.chat.id, "Hanya admin yang bisa menggunakan perintah ini.");
         return;
       }
@@ -1212,7 +1264,7 @@ Wajib Gabung Diblokir: <b>${stats.forceJoinBlocked}</b>`;
   bot.onText(/\/kick/, async (msg) => {
     try {
       if (!msg.from || msg.chat.type === "private") return;
-      if (!(await isAdmin(msg.chat.id, msg.from.id))) {
+      if (!(await isAdmin(msg.chat.id, msg.from.id)) && !isBotOwner(msg.from.id)) {
         await bot!.sendMessage(msg.chat.id, "Hanya admin yang bisa menggunakan perintah ini.");
         return;
       }
@@ -1256,7 +1308,7 @@ Wajib Gabung Diblokir: <b>${stats.forceJoinBlocked}</b>`;
   bot.onText(/\/mute(.*)/, async (msg, match) => {
     try {
       if (!msg.from || msg.chat.type === "private") return;
-      if (!(await isAdmin(msg.chat.id, msg.from.id))) {
+      if (!(await isAdmin(msg.chat.id, msg.from.id)) && !isBotOwner(msg.from.id)) {
         await bot!.sendMessage(msg.chat.id, "Hanya admin yang bisa menggunakan perintah ini.");
         return;
       }
@@ -1312,7 +1364,7 @@ Wajib Gabung Diblokir: <b>${stats.forceJoinBlocked}</b>`;
   bot.onText(/\/unmute/, async (msg) => {
     try {
       if (!msg.from || msg.chat.type === "private") return;
-      if (!(await isAdmin(msg.chat.id, msg.from.id))) {
+      if (!(await isAdmin(msg.chat.id, msg.from.id)) && !isBotOwner(msg.from.id)) {
         await bot!.sendMessage(msg.chat.id, "Hanya admin yang bisa menggunakan perintah ini.");
         return;
       }
@@ -1357,7 +1409,7 @@ Wajib Gabung Diblokir: <b>${stats.forceJoinBlocked}</b>`;
   bot.onText(/\/pin/, async (msg) => {
     try {
       if (!msg.from || msg.chat.type === "private") return;
-      if (!(await isAdmin(msg.chat.id, msg.from.id))) {
+      if (!(await isAdmin(msg.chat.id, msg.from.id)) && !isBotOwner(msg.from.id)) {
         await bot!.sendMessage(msg.chat.id, "Hanya admin yang bisa menggunakan perintah ini.");
         return;
       }
@@ -1378,7 +1430,7 @@ Wajib Gabung Diblokir: <b>${stats.forceJoinBlocked}</b>`;
   bot.onText(/\/unpin/, async (msg) => {
     try {
       if (!msg.from || msg.chat.type === "private") return;
-      if (!(await isAdmin(msg.chat.id, msg.from.id))) {
+      if (!(await isAdmin(msg.chat.id, msg.from.id)) && !isBotOwner(msg.from.id)) {
         await bot!.sendMessage(msg.chat.id, "Hanya admin yang bisa menggunakan perintah ini.");
         return;
       }
@@ -1398,7 +1450,7 @@ Wajib Gabung Diblokir: <b>${stats.forceJoinBlocked}</b>`;
   bot.onText(/\/del/, async (msg) => {
     try {
       if (!msg.from || msg.chat.type === "private") return;
-      if (!(await isAdmin(msg.chat.id, msg.from.id))) {
+      if (!(await isAdmin(msg.chat.id, msg.from.id)) && !isBotOwner(msg.from.id)) {
         await bot!.sendMessage(msg.chat.id, "Hanya admin yang bisa menggunakan perintah ini.");
         return;
       }
@@ -1422,7 +1474,7 @@ Wajib Gabung Diblokir: <b>${stats.forceJoinBlocked}</b>`;
   bot.onText(/\/purge/, async (msg) => {
     try {
       if (!msg.from || msg.chat.type === "private") return;
-      if (!(await isAdmin(msg.chat.id, msg.from.id))) {
+      if (!(await isAdmin(msg.chat.id, msg.from.id)) && !isBotOwner(msg.from.id)) {
         await bot!.sendMessage(msg.chat.id, "Hanya admin yang bisa menggunakan perintah ini.");
         return;
       }
@@ -1459,7 +1511,7 @@ Wajib Gabung Diblokir: <b>${stats.forceJoinBlocked}</b>`;
   bot.onText(/\/setTitle (.+)/i, async (msg, match) => {
     try {
       if (!msg.from || msg.chat.type === "private") return;
-      if (!(await isAdmin(msg.chat.id, msg.from.id))) {
+      if (!(await isAdmin(msg.chat.id, msg.from.id)) && !isBotOwner(msg.from.id)) {
         await bot!.sendMessage(msg.chat.id, "Hanya admin yang bisa menggunakan perintah ini.");
         return;
       }
@@ -1561,7 +1613,7 @@ Wajib Gabung Diblokir: <b>${stats.forceJoinBlocked}</b>`;
   bot.onText(/\/lock/, async (msg) => {
     try {
       if (!msg.from || msg.chat.type === "private") return;
-      if (!(await isAdmin(msg.chat.id, msg.from.id))) {
+      if (!(await isAdmin(msg.chat.id, msg.from.id)) && !isBotOwner(msg.from.id)) {
         await bot!.sendMessage(msg.chat.id, "Hanya admin yang bisa menggunakan perintah ini.");
         return;
       }
@@ -1584,7 +1636,7 @@ Wajib Gabung Diblokir: <b>${stats.forceJoinBlocked}</b>`;
   bot.onText(/\/unlock/, async (msg) => {
     try {
       if (!msg.from || msg.chat.type === "private") return;
-      if (!(await isAdmin(msg.chat.id, msg.from.id))) {
+      if (!(await isAdmin(msg.chat.id, msg.from.id)) && !isBotOwner(msg.from.id)) {
         await bot!.sendMessage(msg.chat.id, "Hanya admin yang bisa menggunakan perintah ini.");
         return;
       }
@@ -1607,7 +1659,7 @@ Wajib Gabung Diblokir: <b>${stats.forceJoinBlocked}</b>`;
   bot.onText(/\/slow(.*)/, async (msg, match) => {
     try {
       if (!msg.from || msg.chat.type === "private") return;
-      if (!(await isAdmin(msg.chat.id, msg.from.id))) {
+      if (!(await isAdmin(msg.chat.id, msg.from.id)) && !isBotOwner(msg.from.id)) {
         await bot!.sendMessage(msg.chat.id, "Hanya admin yang bisa menggunakan perintah ini.");
         return;
       }
@@ -1628,34 +1680,13 @@ Wajib Gabung Diblokir: <b>${stats.forceJoinBlocked}</b>`;
     }
   });
 
-  // /setowner - Jadikan pemilik bot
-  bot.onText(/\/setowner/, async (msg) => {
-    try {
-      if (!msg.from) return;
-
-      if (BOT_OWNER_ID !== null) {
-        await bot!.sendMessage(msg.chat.id, "Pemilik bot sudah ditetapkan. Perintah ini hanya bisa digunakan sekali.");
-        return;
-      }
-
-      BOT_OWNER_ID = msg.from.id;
-      await bot!.sendMessage(
-        msg.chat.id,
-        `${getUserMention(msg.from)} telah ditetapkan sebagai <b>Pemilik Bot</b>.\n\nGunakan /owner untuk membuka panel pemilik bot.`,
-        { parse_mode: "HTML" }
-      );
-    } catch (err) {
-      console.error("Error handling /setowner:", err);
-    }
-  });
-
   // /owner - Panel pemilik bot
   bot.onText(/\/owner/, async (msg) => {
     try {
       if (!msg.from) return;
 
       if (!isBotOwner(msg.from.id)) {
-        await bot!.sendMessage(msg.chat.id, "Perintah ini hanya untuk pemilik bot.\nGunakan /setowner untuk menetapkan pemilik (sekali pakai).");
+        await bot!.sendMessage(msg.chat.id, "Perintah ini hanya untuk pemilik bot.");
         return;
       }
 
@@ -1712,19 +1743,53 @@ Pilih menu di bawah:`;
     }
   });
 
-  // /setgroup - Pengaturan grup via PM (full button)
+  // /setgroup - Daftarkan grup / pengaturan via PM
   bot.onText(/\/setgroup/, async (msg) => {
     try {
       if (!msg.from) return;
 
       if (msg.chat.type !== "private") {
-        await bot!.sendMessage(msg.chat.id, "Gunakan perintah ini di chat pribadi (PM) dengan bot untuk mengatur grup via tombol.", { parse_mode: "HTML" });
+        if (!(await isAdmin(msg.chat.id, msg.from.id)) && !isBotOwner(msg.from.id)) {
+          await bot!.sendMessage(msg.chat.id, "Hanya admin yang bisa menggunakan perintah ini.");
+          return;
+        }
+
+        const chatId = msg.chat.id.toString();
+        await ensureGroupAndSettings(chatId, msg.chat.title || "Grup Tidak Dikenal");
+
+        try {
+          const chatInfo = await bot!.getChat(msg.chat.id);
+          const memberCount = await bot!.getChatMemberCount(msg.chat.id);
+          await storage.upsertGroup({ chatId, title: chatInfo.title || msg.chat.title || "Grup", memberCount, isActive: true });
+        } catch {}
+
+        const me = await bot!.getMe();
+        await bot!.sendMessage(
+          msg.chat.id,
+          `Grup <b>${escapeHtml(msg.chat.title || "Grup")}</b> berhasil didaftarkan!\n\nID Grup: <code>${chatId}</code>\n\nPengaturan lengkap bisa diakses via PM bot.\n<a href="https://t.me/${me.username}?start=setup">Buka PM Bot</a> lalu ketik /setgroup`,
+          { parse_mode: "HTML" }
+        );
+
+        try {
+          const pmKb: TelegramBot.InlineKeyboardButton[][] = [
+            [{ text: "Pengaturan Fitur", callback_data: `pm_settings_${chatId}` }],
+            [{ text: "Wajib Gabung", callback_data: `pm_forcejoin_${chatId}` },
+             { text: "Filter Kata", callback_data: `pm_wordfilter_${chatId}` }],
+            [{ text: "Peringatan", callback_data: `pm_warnings_${chatId}` },
+             { text: "Statistik", callback_data: `pm_stats_${chatId}` }],
+          ];
+          await bot!.sendMessage(
+            msg.from.id,
+            `<b>Grup Terdaftar!</b>\n<i>${escapeHtml(msg.chat.title || "Grup")}</i>\n\nID: <code>${chatId}</code>\n\nPilih menu untuk mengelola:`,
+            { parse_mode: "HTML", reply_markup: { inline_keyboard: pmKb } }
+          );
+        } catch {}
         return;
       }
 
       const allGroups = await storage.getGroups();
       if (allGroups.length === 0) {
-        await bot!.sendMessage(msg.chat.id, "Belum ada grup yang terdaftar. Tambahkan bot ke grup terlebih dahulu.");
+        await bot!.sendMessage(msg.chat.id, "Belum ada grup yang terdaftar.\n\nGunakan /setgroup di dalam grup untuk mendaftarkan grup terlebih dahulu.");
         return;
       }
 
@@ -1739,7 +1804,7 @@ Pilih menu di bawah:`;
       }
 
       if (adminGroups.length === 0) {
-        await bot!.sendMessage(msg.chat.id, "Kamu bukan admin di grup manapun yang terdaftar di bot ini.");
+        await bot!.sendMessage(msg.chat.id, "Kamu bukan admin di grup manapun yang terdaftar di bot ini.\n\nGunakan /setgroup di dalam grup untuk mendaftarkan grup.");
         return;
       }
 
@@ -1799,6 +1864,89 @@ Pilih menu di bawah:`;
         } else {
           await bot!.answerCallbackQuery(query.id, { text: "Kamu belum bergabung ke semua channel yang diwajibkan.", show_alert: true });
         }
+        return;
+      }
+
+      // Start menu buttons
+      if (data === "start_setgroup") {
+        const allGroups = await storage.getGroups();
+        const adminGroups: { chatId: string; title: string }[] = [];
+        for (const group of allGroups) {
+          try {
+            if (await isAdmin(parseInt(group.chatId), query.from.id) || isBotOwner(query.from.id))
+              adminGroups.push({ chatId: group.chatId, title: group.title });
+          } catch {}
+        }
+        if (adminGroups.length === 0) {
+          await bot!.answerCallbackQuery(query.id, { text: "Belum ada grup yang terdaftar. Gunakan /setgroup di grup terlebih dahulu.", show_alert: true });
+          return;
+        }
+        await bot!.editMessageText(
+          `<b>Pengaturan Grup via PM</b>\n\nPilih grup yang ingin diatur:`,
+          { chat_id: chatId, message_id: msgId, parse_mode: "HTML", reply_markup: { inline_keyboard: adminGroups.map(g => [{ text: g.title, callback_data: `pm_group_${g.chatId}` }]) } }
+        );
+        await bot!.answerCallbackQuery(query.id);
+        return;
+      }
+
+      if (data === "start_help") {
+        await bot!.answerCallbackQuery(query.id);
+        const helpText = `<b>Daftar Perintah Bot Moderator</b>
+
+<b>Umum:</b>
+/start - Perkenalan bot
+/help - Daftar perintah
+/menu - Menu pengaturan grup (Admin)
+/rules - Aturan grup
+
+<b>Moderasi (Admin):</b>
+/warn /unwarn /warnings
+/ban /unban /kick
+/mute /unmute
+/del /purge /pin /unpin
+
+<b>Pengaturan (Admin):</b>
+/setgroup - Daftarkan grup
+/setwelcome /setforcejoin /delforcejoin
+/addword /delword
+/setTitle /promote /demote
+/lock /unlock /slow
+
+<b>Pemilik Bot:</b>
+/owner - Panel pemilik
+/broadcast - Kirim ke semua grup`;
+        await bot!.editMessageText(helpText, {
+          chat_id: chatId, message_id: msgId, parse_mode: "HTML",
+          reply_markup: { inline_keyboard: [[{ text: "Kembali", callback_data: `start_back` }]] },
+        });
+        return;
+      }
+
+      if (data === "start_owner") {
+        if (!isBotOwner(query.from.id)) { await bot!.answerCallbackQuery(query.id, { text: "Hanya pemilik bot.", show_alert: true }); return; }
+        const allGroups = await storage.getGroups();
+        await bot!.editMessageText(
+          `<b>Panel Pemilik Bot</b>\n\nTotal Grup: <b>${allGroups.length}</b>\nPemilik: ${getUserMention(query.from)}\n\nPilih menu di bawah:`,
+          { chat_id: chatId, message_id: msgId, parse_mode: "HTML", reply_markup: { inline_keyboard: buildOwnerMenuKeyboard() } }
+        );
+        await bot!.answerCallbackQuery(query.id);
+        return;
+      }
+
+      if (data === "start_back") {
+        const isOwner = isBotOwner(query.from.id);
+        const startKb: TelegramBot.InlineKeyboardButton[][] = [
+          [{ text: "Pengaturan Grup", callback_data: `start_setgroup` }],
+          [{ text: "Bantuan Perintah", callback_data: `start_help` }],
+        ];
+        if (isOwner) {
+          startKb.push([{ text: "Panel Pemilik Bot", callback_data: `start_owner` }]);
+        }
+        await bot!.editMessageText(
+          `<b>Bot Moderator Grup</b>\n\nPilih menu di bawah:`,
+          { chat_id: chatId, message_id: msgId, parse_mode: "HTML", reply_markup: { inline_keyboard: startKb } }
+        );
+        await bot!.answerCallbackQuery(query.id);
         return;
       }
 
@@ -2027,7 +2175,7 @@ Pilih menu di bawah:`;
       // Main menu
       if (data.startsWith("menu_main_")) {
         const groupId = data.replace("menu_main_", "");
-        if (!(await isAdmin(chatId, query.from.id))) { await bot!.answerCallbackQuery(query.id, { text: "Hanya admin.", show_alert: true }); return; }
+        if (!(await isAdmin(chatId, query.from.id)) && !isBotOwner(query.from.id)) { await bot!.answerCallbackQuery(query.id, { text: "Hanya admin.", show_alert: true }); return; }
         const chat = await bot!.getChat(chatId);
         await bot!.editMessageText(
           `<b>${escapeHtml(chat.title || "Grup")}</b>\n\nPilih menu:`,
@@ -2040,7 +2188,7 @@ Pilih menu di bawah:`;
       // Settings menu
       if (data.startsWith("menu_settings_")) {
         const groupId = data.replace("menu_settings_", "");
-        if (!(await isAdmin(chatId, query.from.id))) { await bot!.answerCallbackQuery(query.id, { text: "Hanya admin.", show_alert: true }); return; }
+        if (!(await isAdmin(chatId, query.from.id)) && !isBotOwner(query.from.id)) { await bot!.answerCallbackQuery(query.id, { text: "Hanya admin.", show_alert: true }); return; }
         const settings = await storage.getSettings(groupId);
         if (!settings) { await bot!.answerCallbackQuery(query.id, { text: "Tidak ditemukan.", show_alert: true }); return; }
         await bot!.editMessageText(
@@ -2054,7 +2202,7 @@ Pilih menu di bawah:`;
       // Force join menu
       if (data.startsWith("menu_forcejoin_")) {
         const groupId = data.replace("menu_forcejoin_", "");
-        if (!(await isAdmin(chatId, query.from.id))) { await bot!.answerCallbackQuery(query.id, { text: "Hanya admin.", show_alert: true }); return; }
+        if (!(await isAdmin(chatId, query.from.id)) && !isBotOwner(query.from.id)) { await bot!.answerCallbackQuery(query.id, { text: "Hanya admin.", show_alert: true }); return; }
         const settings = await storage.getSettings(groupId);
         if (!settings) { await bot!.answerCallbackQuery(query.id, { text: "Tidak ditemukan.", show_alert: true }); return; }
         await bot!.editMessageText(
@@ -2068,7 +2216,7 @@ Pilih menu di bawah:`;
       // Word filter menu (in-group)
       if (data.startsWith("menu_wordfilter_")) {
         const groupId = data.replace("menu_wordfilter_", "");
-        if (!(await isAdmin(chatId, query.from.id))) { await bot!.answerCallbackQuery(query.id, { text: "Hanya admin.", show_alert: true }); return; }
+        if (!(await isAdmin(chatId, query.from.id)) && !isBotOwner(query.from.id)) { await bot!.answerCallbackQuery(query.id, { text: "Hanya admin.", show_alert: true }); return; }
         const settings = await storage.getSettings(groupId);
         if (!settings) { await bot!.answerCallbackQuery(query.id, { text: "Tidak ditemukan.", show_alert: true }); return; }
         await bot!.editMessageText(
@@ -2082,7 +2230,7 @@ Pilih menu di bawah:`;
       // Stats menu
       if (data.startsWith("menu_stats_")) {
         const groupId = data.replace("menu_stats_", "");
-        if (!(await isAdmin(chatId, query.from.id))) { await bot!.answerCallbackQuery(query.id, { text: "Hanya admin.", show_alert: true }); return; }
+        if (!(await isAdmin(chatId, query.from.id)) && !isBotOwner(query.from.id)) { await bot!.answerCallbackQuery(query.id, { text: "Hanya admin.", show_alert: true }); return; }
         const stats = await storage.getStats(groupId);
         await bot!.editMessageText(buildStatsText(stats), {
           chat_id: chatId, message_id: msgId, parse_mode: "HTML",
@@ -2098,7 +2246,7 @@ Pilih menu di bawah:`;
       // Warnings menu
       if (data.startsWith("menu_warnings_")) {
         const groupId = data.replace("menu_warnings_", "");
-        if (!(await isAdmin(chatId, query.from.id))) { await bot!.answerCallbackQuery(query.id, { text: "Hanya admin.", show_alert: true }); return; }
+        if (!(await isAdmin(chatId, query.from.id)) && !isBotOwner(query.from.id)) { await bot!.answerCallbackQuery(query.id, { text: "Hanya admin.", show_alert: true }); return; }
         const settings = await storage.getSettings(groupId);
         if (!settings) { await bot!.answerCallbackQuery(query.id, { text: "Tidak ditemukan.", show_alert: true }); return; }
         await bot!.editMessageText(
@@ -2122,7 +2270,7 @@ Pilih menu di bawah:`;
         };
         const dbField = fieldMap[field];
         if (!dbField) { await bot!.answerCallbackQuery(query.id, { text: "Tidak dikenal.", show_alert: true }); return; }
-        if (!(await isAdmin(chatId, query.from.id))) { await bot!.answerCallbackQuery(query.id, { text: "Hanya admin.", show_alert: true }); return; }
+        if (!(await isAdmin(chatId, query.from.id)) && !isBotOwner(query.from.id)) { await bot!.answerCallbackQuery(query.id, { text: "Hanya admin.", show_alert: true }); return; }
         const settings = await storage.getSettings(groupId);
         if (!settings) { await bot!.answerCallbackQuery(query.id, { text: "Tidak ditemukan.", show_alert: true }); return; }
 
@@ -2162,7 +2310,7 @@ Pilih menu di bawah:`;
         const parts = data.replace("setwarnlimit_", "").split("_");
         const limit = parseInt(parts.pop()!, 10);
         const groupId = parts.join("_");
-        if (!(await isAdmin(chatId, query.from.id))) { await bot!.answerCallbackQuery(query.id, { text: "Hanya admin.", show_alert: true }); return; }
+        if (!(await isAdmin(chatId, query.from.id)) && !isBotOwner(query.from.id)) { await bot!.answerCallbackQuery(query.id, { text: "Hanya admin.", show_alert: true }); return; }
         await storage.updateSettings(groupId, { warnLimit: limit });
         const settings = await storage.getSettings(groupId);
         if (!settings) return;
@@ -2179,7 +2327,7 @@ Pilih menu di bawah:`;
         const parts = data.replace("setwarnaction_", "").split("_");
         const action = parts.pop()!;
         const groupId = parts.join("_");
-        if (!(await isAdmin(chatId, query.from.id))) { await bot!.answerCallbackQuery(query.id, { text: "Hanya admin.", show_alert: true }); return; }
+        if (!(await isAdmin(chatId, query.from.id)) && !isBotOwner(query.from.id)) { await bot!.answerCallbackQuery(query.id, { text: "Hanya admin.", show_alert: true }); return; }
         await storage.updateSettings(groupId, { warnAction: action });
         const settings = await storage.getSettings(groupId);
         if (!settings) return;
@@ -2218,7 +2366,7 @@ Pilih menu di bawah:`;
       // Clear words (in-group)
       if (data.startsWith("clearwords_")) {
         const groupId = data.replace("clearwords_", "");
-        if (!(await isAdmin(chatId, query.from.id))) { await bot!.answerCallbackQuery(query.id, { text: "Hanya admin.", show_alert: true }); return; }
+        if (!(await isAdmin(chatId, query.from.id)) && !isBotOwner(query.from.id)) { await bot!.answerCallbackQuery(query.id, { text: "Hanya admin.", show_alert: true }); return; }
         await storage.updateSettings(groupId, { bannedWords: [] });
         const updated = await storage.getSettings(groupId);
         if (!updated) return;
@@ -2251,7 +2399,7 @@ Pilih menu di bawah:`;
         const firstUnderscore = rest.indexOf("_");
         const groupId = rest.substring(0, firstUnderscore);
         const channel = rest.substring(firstUnderscore + 1);
-        if (!(await isAdmin(chatId, query.from.id))) { await bot!.answerCallbackQuery(query.id, { text: "Hanya admin.", show_alert: true }); return; }
+        if (!(await isAdmin(chatId, query.from.id)) && !isBotOwner(query.from.id)) { await bot!.answerCallbackQuery(query.id, { text: "Hanya admin.", show_alert: true }); return; }
 
         const settings = await storage.getSettings(groupId);
         if (!settings) return;
@@ -2352,6 +2500,46 @@ Wajib Gabung Diblokir: <b>${totalForceJoin}</b>`;
         return;
       }
 
+      // Owner manage groups - list groups for per-group config
+      if (data === "owner_manage") {
+        if (!isBotOwner(query.from.id)) { await bot!.answerCallbackQuery(query.id, { text: "Hanya pemilik bot.", show_alert: true }); return; }
+        const allGroups = await storage.getGroups();
+        if (allGroups.length === 0) {
+          await bot!.answerCallbackQuery(query.id, { text: "Belum ada grup terdaftar.", show_alert: true });
+          return;
+        }
+        const kb: TelegramBot.InlineKeyboardButton[][] = allGroups.map(g => [{ text: g.title, callback_data: `pm_group_${g.chatId}` }]);
+        kb.push([{ text: "Kembali", callback_data: `owner_back` }]);
+        await bot!.editMessageText(
+          `<b>Kelola Grup</b>\n\nPilih grup untuk mengelola pengaturan:`,
+          { chat_id: chatId, message_id: msgId, parse_mode: "HTML", reply_markup: { inline_keyboard: kb } }
+        );
+        await bot!.answerCallbackQuery(query.id);
+        return;
+      }
+
+      // Owner logs - recent activity across all groups
+      if (data === "owner_logs") {
+        if (!isBotOwner(query.from.id)) { await bot!.answerCallbackQuery(query.id, { text: "Hanya pemilik bot.", show_alert: true }); return; }
+        const logs = await storage.getRecentLogs(15);
+        let text = `<b>Log Aktivitas Terbaru</b>\n\n`;
+        if (logs.length === 0) {
+          text += "Belum ada aktivitas.";
+        } else {
+          for (const log of logs) {
+            const actionLabel: Record<string, string> = { warn: "Peringatan", ban: "Banned", kick: "Tendang", mute: "Bisukan", delete: "Hapus", spam_blocked: "Spam", link_blocked: "Link", word_filtered: "Filter Kata", flood_blocked: "Flood", force_join: "Wajib Gabung", ai_moderated: "AI Moderasi" };
+            const d = log.createdAt ? new Date(log.createdAt) : new Date();
+            text += `<code>${d.toLocaleString("id-ID", { timeZone: "Asia/Jakarta" })}</code>\n[${actionLabel[log.action] || log.action}] ${log.reason || ""}\n\n`;
+          }
+        }
+        await bot!.editMessageText(text, {
+          chat_id: chatId, message_id: msgId, parse_mode: "HTML",
+          reply_markup: { inline_keyboard: [[{ text: "Perbarui", callback_data: `owner_logs` }], [{ text: "Kembali", callback_data: `owner_back` }]] },
+        });
+        await bot!.answerCallbackQuery(query.id);
+        return;
+      }
+
       // Owner broadcast prompt
       if (data === "owner_broadcast") {
         if (!isBotOwner(query.from.id)) {
@@ -2403,6 +2591,8 @@ Wajib Gabung Diblokir: <b>${totalForceJoin}</b>`;
       const chatId = msg.chat.id.toString();
       await ensureGroupAndSettings(chatId, msg.chat.title || "Grup Tidak Dikenal");
       await storage.incrementStat(chatId, "messagesProcessed");
+
+      if (isBotOwner(msg.from.id)) return;
 
       const passed = await checkForceJoin(msg);
       if (!passed) return;
