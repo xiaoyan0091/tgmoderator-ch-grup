@@ -1556,6 +1556,13 @@ export async function startBot() {
     try {
       if (!msg.from) return;
 
+      await storage.upsertBotUser({
+        odId: msg.from.id.toString(),
+        firstName: msg.from.first_name || "",
+        lastName: msg.from.last_name || "",
+        username: msg.from.username || "",
+      });
+
       if (msg.chat.type !== "private") {
         const chatId = msg.chat.id.toString();
         await ensureGroupAndSettings(chatId, msg.chat.title || "Grup Tidak Dikenal");
@@ -2613,8 +2620,101 @@ Wajib Sub Diblokir: <b>${stats.forceJoinBlocked}</b>`;
     }
   });
 
-  // /broadcast - Kirim pesan ke semua grup
-  bot.onText(/\/broadcast (.[\s\S]+)/, async (msg, match) => {
+  function applyFillings(text: string, user: { id: number; first_name: string; last_name?: string; username?: string }, chatName?: string): { text: string; protect: boolean; preview: boolean; nonotif: boolean } {
+    let protect = false;
+    let preview = false;
+    let nonotif = false;
+
+    const firstName = user.first_name || "";
+    const lastName = user.last_name || "";
+    const fullName = lastName ? `${firstName} ${lastName}` : firstName;
+    const username = user.username ? `@${user.username}` : `<a href="tg://user?id=${user.id}">${escapeHtml(firstName)}</a>`;
+    const mention = `<a href="tg://user?id=${user.id}">${escapeHtml(firstName)}</a>`;
+
+    let result = text;
+    result = result.replace(/\{first\}/gi, escapeHtml(firstName));
+    result = result.replace(/\{last\}/gi, escapeHtml(lastName));
+    result = result.replace(/\{fullname\}/gi, escapeHtml(fullName));
+    result = result.replace(/\{username\}/gi, username);
+    result = result.replace(/\{mention\}/gi, mention);
+    result = result.replace(/\{id\}/gi, String(user.id));
+    result = result.replace(/\{chatname\}/gi, escapeHtml(chatName || "Private Chat"));
+
+    if (/\{rules\}/gi.test(result)) {
+      result = result.replace(/\{rules\}/gi, "");
+    }
+    if (/\{protect\}/gi.test(result)) {
+      protect = true;
+      result = result.replace(/\{protect\}/gi, "");
+    }
+    if (/\{preview\}/gi.test(result)) {
+      preview = true;
+      result = result.replace(/\{preview\}/gi, "");
+    }
+    if (/\{nonotif\}/gi.test(result)) {
+      nonotif = true;
+      result = result.replace(/\{nonotif\}/gi, "");
+    }
+
+    return { text: result.trim(), protect, preview, nonotif };
+  }
+
+  function parseMarkdownToHtml(text: string): string {
+    let result = text;
+    result = result.replace(/```([\s\S]*?)```/g, "<pre>$1</pre>");
+    result = result.replace(/`([^`]+)`/g, "<code>$1</code>");
+    result = result.replace(/\*([^*]+)\*/g, "<b>$1</b>");
+    result = result.replace(/_([^_]+)_/g, "<i>$1</i>");
+    result = result.replace(/~([^~]+)~/g, "<s>$1</s>");
+    result = result.replace(/\|\|([^|]+)\|\|/g, '<span class="tg-spoiler">$1</span>');
+    result = result.replace(/__([^_]+)__/g, "<u>$1</u>");
+    result = result.replace(/\[([^\]]+)\]\((?!buttonurl:\/\/)([^)]+)\)/g, '<a href="$2">$1</a>');
+    return result;
+  }
+
+  function extractButtonUrls(text: string): { cleanText: string; buttons: TelegramBot.InlineKeyboardButton[][] } {
+    const buttons: TelegramBot.InlineKeyboardButton[][] = [];
+    const buttonRegex = /\[([^\]]+)\]\(buttonurl:\/\/([^)]+)\)/g;
+    let cleanText = text;
+    const matches: { full: string; label: string; url: string; same: boolean }[] = [];
+
+    let m;
+    while ((m = buttonRegex.exec(text)) !== null) {
+      let url = m[2];
+      let same = false;
+      if (url.endsWith(":same")) {
+        same = true;
+        url = url.slice(0, -5);
+      }
+      matches.push({ full: m[0], label: m[1], url, same });
+    }
+
+    for (const match of matches) {
+      cleanText = cleanText.replace(match.full, "");
+    }
+
+    cleanText = cleanText.replace(/\n{3,}/g, "\n\n").trim();
+
+    let currentRow: TelegramBot.InlineKeyboardButton[] = [];
+    for (const match of matches) {
+      if (match.same && currentRow.length > 0) {
+        currentRow.push({ text: match.label, url: match.url });
+      } else {
+        if (currentRow.length > 0) {
+          buttons.push(currentRow);
+        }
+        currentRow = [{ text: match.label, url: match.url }];
+      }
+    }
+    if (currentRow.length > 0) {
+      buttons.push(currentRow);
+    }
+
+    return { cleanText, buttons };
+  }
+
+  // /broadcast - Kirim pesan ke semua pengguna yang start bot
+  bot.onText(/\/broadcast([\s\S]+)/, async (msg, match) => {
     try {
       if (!msg.from) return;
 
@@ -2623,26 +2723,88 @@ Wajib Sub Diblokir: <b>${stats.forceJoinBlocked}</b>`;
         return;
       }
 
-      const message = match![1];
-      const allGroups = await storage.getGroups();
+      const rawMessage = (match![1] || "").trim();
+      if (!rawMessage) {
+        await bot!.sendMessage(msg.chat.id, "\u274C Pesan broadcast tidak boleh kosong!\n\nGunakan: <code>/broadcast pesan anda</code>", { parse_mode: "HTML" });
+        return;
+      }
+
+      const allUsers = await storage.getAllBotUsers();
+
+      if (allUsers.length === 0) {
+        await bot!.sendMessage(msg.chat.id, "\u274C Belum ada pengguna yang memulai bot.", { parse_mode: "HTML" });
+        return;
+      }
+
+      const statusMsg = await bot!.sendMessage(
+        msg.chat.id,
+        `\u23F3 <b>Broadcast dimulai...</b>\n\nTarget: <b>${allUsers.length}</b> pengguna\nStatus: Mengirim...`,
+        { parse_mode: "HTML" }
+      );
 
       let sent = 0;
       let failed = 0;
+      let blocked = 0;
 
-      for (const group of allGroups) {
+      for (const user of allUsers) {
         try {
-          await bot!.sendMessage(group.chatId, message, { parse_mode: "HTML" });
+          const userObj = {
+            id: parseInt(user.odId),
+            first_name: user.firstName || "",
+            last_name: user.lastName || "",
+            username: user.username || "",
+          };
+
+          let processedText = rawMessage;
+          processedText = parseMarkdownToHtml(processedText);
+          const { cleanText, buttons } = extractButtonUrls(processedText);
+          const fillings = applyFillings(cleanText, userObj);
+
+          const sendOptions: any = {
+            parse_mode: "HTML",
+            disable_web_page_preview: !fillings.preview,
+            disable_notification: fillings.nonotif,
+          };
+
+          if (fillings.protect) {
+            sendOptions.protect_content = true;
+          }
+
+          if (buttons.length > 0) {
+            sendOptions.reply_markup = { inline_keyboard: buttons };
+          }
+
+          await bot!.sendMessage(user.odId, fillings.text, sendOptions);
           sent++;
-        } catch {
+        } catch (e: any) {
+          const errStr = String(e).toLowerCase();
+          if (errStr.includes("blocked") || errStr.includes("deactivated") || errStr.includes("not found")) {
+            blocked++;
+          }
           failed++;
+        }
+
+        if ((sent + failed) % 25 === 0) {
+          try {
+            await bot!.editMessageText(
+              `\u23F3 <b>Broadcast sedang berjalan...</b>\n\nTarget: <b>${allUsers.length}</b> pengguna\nTerkirim: <b>${sent}</b>\nGagal: <b>${failed}</b>\nProgress: <b>${sent + failed}/${allUsers.length}</b>`,
+              { chat_id: msg.chat.id, message_id: statusMsg.message_id, parse_mode: "HTML" }
+            );
+          } catch {}
         }
       }
 
-      await bot!.sendMessage(
-        msg.chat.id,
-        `<b>Broadcast selesai</b>\n\nBerhasil terkirim: ${sent}\nGagal: ${failed}\nTotal grup: ${allGroups.length}`,
-        { parse_mode: "HTML" }
-      );
+      try {
+        await bot!.editMessageText(
+          `\u2705 <b>Broadcast Selesai!</b>\n\n` +
+          `\uD83D\uDCE8 <b>Total Target:</b> ${allUsers.length} pengguna\n` +
+          `\u2705 <b>Terkirim:</b> ${sent}\n` +
+          `\u274C <b>Gagal:</b> ${failed}\n` +
+          `\uD83D\uDEAB <b>Blocked/Deaktif:</b> ${blocked}\n\n` +
+          `<i>Broadcast dikirim ke semua pengguna yang pernah /start bot.</i>`,
+          { chat_id: msg.chat.id, message_id: statusMsg.message_id, parse_mode: "HTML" }
+        );
+      } catch {}
     } catch (err) {
       console.error("Error handling /broadcast:", err);
     }
@@ -2877,7 +3039,7 @@ Wajib Sub Diblokir: <b>${stats.forceJoinBlocked}</b>`;
         await bot!.editMessageText(
           `<b>\uD83D\uDC51 Perintah Pemilik Bot</b>\n\n` +
           `<b>/owner</b> - Panel pemilik bot (tombol)\n` +
-          `<b>/broadcast</b> [pesan] - Kirim ke semua grup\n\n` +
+          `<b>/broadcast</b> [pesan] - Kirim ke semua pengguna\n\n` +
           `<b>Keterangan:</b>\n` +
           `- Pemilik bot memiliki akses penuh tanpa batasan\n` +
           `- Pemilik bot dikecualikan dari semua filter\n` +
@@ -3514,26 +3676,60 @@ Force Sub Diblokir: <b>${totalForceSub}</b>`;
         return;
       }
 
-      // Owner broadcast menu with button
       if (data === "owner_broadcast_menu") {
         if (!isBotOwner(query.from.id)) {
           await bot!.answerCallbackQuery(query.id, { text: "Hanya pemilik bot.", show_alert: true });
           return;
         }
 
-        const allGroups = await storage.getGroups();
-        const activeCount = allGroups.filter(g => g.isActive).length;
+        const userCount = await storage.getBotUserCount();
 
         await bot!.editMessageText(
-          `<b>Broadcast Pesan</b>\n\n` +
-          `Target: <b>${activeCount}</b> grup aktif dari <b>${allGroups.length}</b> total\n\n` +
+          `<b>\uD83D\uDCE2 Broadcast Pesan</b>\n\n` +
+          `\uD83D\uDCE8 Target: <b>${userCount}</b> pengguna yang pernah /start bot\n\n` +
           `<b>Cara Broadcast:</b>\n` +
           `Kirim perintah di chat ini:\n` +
           `<code>/broadcast pesan anda di sini</code>\n\n` +
           `<b>Contoh:</b>\n` +
-          `<code>/broadcast Halo semua! Ada update baru dari bot.</code>\n\n` +
-          `<i>Pesan akan dikirim ke semua grup yang terdaftar.</i>\n` +
-          `<i>Support HTML formatting (bold, italic, link, dll).</i>`,
+          `<code>/broadcast Halo {first}! Ada update baru.</code>\n\n` +
+
+          `<b>\u2728 Variabel Isian (Fillings):</b>\n` +
+          `Anda bisa menyesuaikan isi pesan dengan data pengguna.\n\n` +
+          `Variabel yang didukung:\n` +
+          `\u2022 <code>{first}</code> - Nama depan pengguna\n` +
+          `\u2022 <code>{last}</code> - Nama belakang pengguna\n` +
+          `\u2022 <code>{fullname}</code> - Nama lengkap pengguna\n` +
+          `\u2022 <code>{username}</code> - Username pengguna. Jika tidak punya, mention pengguna.\n` +
+          `\u2022 <code>{mention}</code> - Mention pengguna dengan nama depannya\n` +
+          `\u2022 <code>{id}</code> - ID pengguna\n` +
+          `\u2022 <code>{chatname}</code> - Nama chat\n` +
+          `\u2022 <code>{protect}</code> - Lindungi konten agar tidak bisa di-forward\n` +
+          `\u2022 <code>{preview}</code> - Aktifkan preview link dalam pesan\n` +
+          `\u2022 <code>{nonotif}</code> - Nonaktifkan notifikasi untuk pesan tersebut\n\n` +
+
+          `<b>\uD83C\uDFA8 Format Markdown:</b>\n` +
+          `Anda bisa memformat pesan menggunakan tebal, miring, garis bawah, dan lainnya.\n\n` +
+          `Format yang didukung:\n` +
+          `\u2022 <code>\`teks kode\`</code> - Font monospace. Tampil: <code>teks kode</code>\n` +
+          `\u2022 <code>_teks miring_</code> - Font miring. Tampil: <i>teks miring</i>\n` +
+          `\u2022 <code>*teks tebal*</code> - Font tebal. Tampil: <b>teks tebal</b>\n` +
+          `\u2022 <code>~coret~</code> - Teks dicoret. Tampil: <s>coret</s>\n` +
+          `\u2022 <code>||spoiler||</code> - Teks spoiler. Tampil: spoiler tersembunyi\n` +
+          `\u2022 <code>\`\`\`pre\`\`\`</code> - Blok kode preformat\n` +
+          `\u2022 <code>__garis bawah__</code> - Garis bawah. Tampil: <u>garis bawah</u>\n` +
+          `\u2022 <code>[hyperlink](example.com)</code> - Tautan. Tampil: hyperlink\n\n` +
+
+          `<b>\uD83D\uDD18 Tombol URL:</b>\n` +
+          `\u2022 <code>[Tombol Saya](buttonurl://example.com)</code>\n` +
+          `  Membuat tombol bernama "Tombol Saya" yang membuka example.com\n\n` +
+          `Untuk menampilkan tombol di baris yang sama, gunakan format <code>:same</code>\n\n` +
+          `Contoh:\n` +
+          `<code>[Tombol 1](buttonurl://example.com)</code>\n` +
+          `<code>[Tombol 2](buttonurl://example.com:same)</code>\n` +
+          `<code>[Tombol 3](buttonurl://example.com)</code>\n\n` +
+          `Ini akan menampilkan Tombol 1 dan 2 di baris yang sama, dengan Tombol 3 di bawahnya.\n\n` +
+
+          `<i>Pesan akan dikirim ke semua pengguna yang pernah /start bot.</i>`,
           {
             chat_id: chatId,
             message_id: msgId,
