@@ -54,8 +54,13 @@ export async function pushSchema() {
         warn_action TEXT DEFAULT 'mute',
         mute_new_members BOOLEAN DEFAULT false,
         mute_new_members_duration INTEGER DEFAULT 300,
+        ai_moderator_enabled BOOLEAN DEFAULT false,
         created_at TIMESTAMP DEFAULT NOW()
       );
+    `);
+
+    await client.query(`
+      ALTER TABLE group_settings ADD COLUMN IF NOT EXISTS ai_moderator_enabled BOOLEAN DEFAULT false;
     `);
 
     await client.query(`
