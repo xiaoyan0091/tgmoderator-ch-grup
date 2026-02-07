@@ -102,3 +102,9 @@ export const activityLogs = pgTable("activity_logs", {
 export const insertActivityLogSchema = createInsertSchema(activityLogs).omit({ id: true, createdAt: true });
 export type InsertActivityLog = z.infer<typeof insertActivityLogSchema>;
 export type ActivityLog = typeof activityLogs.$inferSelect;
+
+export const botOwnerData = pgTable("bot_owner_data", {
+  id: serial("id").primaryKey(),
+  dataJson: text("data_json").notNull().default("{}"),
+  updatedAt: timestamp("updated_at").defaultNow(),
+});

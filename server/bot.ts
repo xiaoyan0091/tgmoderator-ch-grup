@@ -14,6 +14,63 @@ const floodTracker = new Map<string, number[]>();
 let bot: TelegramBot | null = null;
 const BOT_OWNER_ID: number = 6444305696;
 
+interface JadwalItem {
+  judul: string;
+  link?: string;
+}
+
+interface UpcomingItem {
+  judul: string;
+  hari: string;
+  tanggal: string;
+  link?: string;
+  season?: string;
+}
+
+interface MediaItem {
+  type: string;
+  url: string;
+}
+
+interface JadwalData {
+  harian: Record<string, (string | JadwalItem)[]>;
+  upcoming: UpcomingItem[];
+  channels: string[];
+  post_time: string;
+  auto_post_enabled: boolean;
+  telegraph_token: string;
+  telegraph_url: string;
+  rules_text: string;
+  media_jadwal: Record<string, MediaItem>;
+}
+
+let jadwalData: JadwalData = {
+  harian: { Senin: [], Selasa: [], Rabu: [], Kamis: [], Jumat: [], Sabtu: [], Minggu: [] },
+  upcoming: [],
+  channels: [],
+  post_time: "06:00",
+  auto_post_enabled: false,
+  telegraph_token: "",
+  telegraph_url: "",
+  rules_text: "",
+  media_jadwal: {
+    Senin: { type: "", url: "" },
+    Selasa: { type: "", url: "" },
+    Rabu: { type: "", url: "" },
+    Kamis: { type: "", url: "" },
+    Jumat: { type: "", url: "" },
+    Sabtu: { type: "", url: "" },
+    Minggu: { type: "", url: "" },
+  },
+};
+
+const ownerWaitingState = new Map<number, { type: string; extra?: string }>();
+let autoPostInterval: NodeJS.Timeout | null = null;
+let lastAutoPostDate: string = "";
+let lastJadwalTime: number | null = null;
+let lastRulesTime: number | null = null;
+const VALID_DAYS = ["Senin", "Selasa", "Rabu", "Kamis", "Jumat", "Sabtu", "Minggu"];
+
 function getUserDisplayName(user: TelegramBot.User): string {
   if (user.username) return `@${user.username}`;
   return [user.first_name, user.last_name].filter(Boolean).join(" ");
@@ -528,15 +585,732 @@ function buildPmConfigKeyboard(groupId: string): TelegramBot.InlineKeyboardButto
   ];
 }
 
+async function loadJadwalData() {
+  const data = await storage.getOwnerData();
+  if (data) Object.assign(jadwalData, data);
+}
+
+async function saveJadwalData() {
+  await storage.saveOwnerData(jadwalData);
+}
+
+function getTodayIndo(): string {
+  const now = new Date();
+  const days: Record<string, string> = {
+    Monday: "Senin", Tuesday: "Selasa", Wednesday: "Rabu",
+    Thursday: "Kamis", Friday: "Jumat", Saturday: "Sabtu", Sunday: "Minggu",
+  };
+  const englishDay = now.toLocaleDateString("en-US", { timeZone: "Asia/Jakarta", weekday: "long" });
+  return days[englishDay] || "Senin";
+}
+
+function formatJadwalHariIni(): string {
+  const today = getTodayIndo();
+  let msg = `<b>Jadwal Donghua Hari Ini :</b>\n`;
+
+  if (jadwalData.harian[today] && jadwalData.harian[today].length > 0) {
+    jadwalData.harian[today].forEach((anime, idx) => {
+      const i = idx + 1;
+      if (typeof anime === "object" && anime.link) {
+        msg += `  ${i}. <a href="${anime.link}">${anime.judul}</a>\n`;
+      } else if (typeof anime === "object") {
+        msg += `  ${i}. ${anime.judul}\n`;
+      } else {
+        msg += `  ${i}. ${anime}\n`;
+      }
+    });
+  } else {
+    msg += `\u274C <i>Tidak ada jadwal donghua hari ini dalam waktu dekat</i>\n`;
+  }
+
+  msg += `\n<b>Upcoming Donghua :\n</b>`;
+
+  if (jadwalData.upcoming.length > 0) {
+    jadwalData.upcoming.forEach((up, idx) => {
+      const i = idx + 1;
+      msg += `<blockquote>${i}. <b>${up.judul}</b>`;
+      if (up.season) msg += `[Season ${up.season}]`;
+      if (up.link) {
+        msg += `\n(${up.hari}, ${up.tanggal}) (<a href="${up.link}">PV</a>)</blockquote>\n`;
+      } else {
+        msg += `\n(${up.hari}, ${up.tanggal})</blockquote>\n`;
+      }
+    });
+  } else {
+    msg += `<blockquote>Belum ada donghua dalam waktu dekat</blockquote>\n\n`;
+  }
+
+  if (jadwalData.telegraph_url) {
+    msg += `<a href="${jadwalData.telegraph_url}"><b>Jadwal Donghua Semua Hari</b></a>\n#botjadwal`;
+  } else {
+    msg += `<b>Jadwal Donghua Semua Hari</b>\n#botjadwal`;
+  }
+
+  return msg;
+}
+
+function formatJadwalLengkap(): string {
+  const today = getTodayIndo();
+  let msg = `<b>Jadwal Donghua Hari Ini :</b>\n`;
+
+  if (jadwalData.harian[today] && jadwalData.harian[today].length > 0) {
+    jadwalData.harian[today].forEach((anime, idx) => {
+      const i = idx + 1;
+      if (typeof anime === "object" && anime.link) {
+        msg += ` ${i}. <a href="${anime.link}">${anime.judul}</a>\n`;
+      } else if (typeof anime === "object") {
+        msg += ` ${i}. ${anime.judul}\n`;
+      } else {
+        msg += ` ${i}. ${anime}\n`;
+      }
+    });
+  } else {
+    msg += `Tidak ada jadwal hari ini\n`;
+  }
+
+  msg += `\n<b>Upcoming Donghua :\n</b>`;
+
+  if (jadwalData.upcoming.length > 0) {
+    jadwalData.upcoming.forEach((up, idx) => {
+      const i = idx + 1;
+      msg += `<blockquote>${i}. <b>${up.judul}</b>`;
+      if (up.season) msg += `[Season ${up.season}]`;
+      if (up.link) {
+        msg += `\n(${up.hari}, ${up.tanggal}) (<a href="${up.link}">PV</a>)</blockquote>\n`;
+      } else {
+        msg += `\n(${up.hari}, ${up.tanggal})</blockquote>\n`;
+      }
+    });
+  } else {
+    msg += `<blockquote> Belum ada donghua dalam waktu dekat </blockquote>\n\n`;
+  }
+
+  if (jadwalData.telegraph_url) {
+    msg += `<a href="${jadwalData.telegraph_url}"><b>Jadwal Donghua Semua Hari</b></a>\n#botjadwal`;
+  } else {
+    msg += `<b>Jadwal Donghua Semua Hari</b>\n#botjadwal`;
+  }
+
+  return msg;
+}
+
+function formatRulesMessage(): string {
+  if (!jadwalData.rules_text) {
+    return `\u274C <i>Rules belum diset oleh admin</i>\n\n#rulesbot`;
+  }
+  return `${jadwalData.rules_text}\n\n#rulesbot`;
+}
+
+function getMediaForToday(): MediaItem {
+  const today = getTodayIndo();
+  return jadwalData.media_jadwal[today] || { type: "", url: "" };
+}
+
+async function sendJadwalWithMedia(chatId: string | number, messageText: string) {
+  try {
+    const todayMedia = getMediaForToday();
+    if (todayMedia.url && todayMedia.type) {
+      if (todayMedia.type === "video") {
+        await bot!.sendVideo(chatId, todayMedia.url, { caption: messageText, parse_mode: "HTML" });
+      } else if (todayMedia.type === "photo") {
+        await bot!.sendPhoto(chatId, todayMedia.url, { caption: messageText, parse_mode: "HTML" });
+      }
+    } else {
+      await bot!.sendMessage(chatId, messageText, { parse_mode: "HTML", disable_web_page_preview: true });
+    }
+  } catch (err) {
+    try {
+      await bot!.sendMessage(chatId, messageText, { parse_mode: "HTML", disable_web_page_preview: true });
+    } catch (fallbackErr) {
+      console.error("Send text fallback error:", fallbackErr);
+    }
+  }
+}
+
+async function createTelegraphAccount(): Promise<string | null> {
+  try {
+    const res = await fetch("https://api.telegra.ph/createAccount", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        short_name: "JadwalDonghua",
+        author_name: "Jadwal Donghua Bot",
+        author_url: "https://t.me/AnimeStreamingID",
+      }),
+    });
+    const result = await res.json();
+    if (result.ok) return result.result.access_token;
+  } catch (e) { console.error("Telegraph account creation error:", e); }
+  return null;
+}
+
+async function createTelegraphPage(token: string, title: string, content: any[]): Promise<string | null> {
+  try {
+    const res = await fetch("https://api.telegra.ph/createPage", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ access_token: token, title, content, return_content: false }),
+    });
+    const result = await res.json();
+    if (result.ok) return result.result.url;
+  } catch (e) { console.error("Telegraph page creation error:", e); }
+  return null;
+}
+
+async function updateTelegraphPage(token: string, path: string, title: string, content: any[]): Promise<string | null> {
+  try {
+    const res = await fetch(`https://api.telegra.ph/editPage/${path}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ access_token: token, title, content, return_content: false }),
+    });
+    const result = await res.json();
+    if (result.ok) return result.result.url;
+  } catch (e) { console.error("Telegraph page update error:", e); }
+  return null;
+}
+
+function generateTelegraphContent(): any[] {
+  const now = new Date();
+  const wibNow = new Date(now.toLocaleString("en-US", { timeZone: "Asia/Jakarta" }));
+  const today = getTodayIndo();
+  const bulanIndo: Record<number, string> = {
+    1: "Januari", 2: "Februari", 3: "Maret", 4: "April", 5: "Mei", 6: "Juni",
+    7: "Juli", 8: "Agustus", 9: "September", 10: "Oktober", 11: "November", 12: "Desember",
+  };
+  const date = wibNow.getDate();
+  const month = bulanIndo[wibNow.getMonth() + 1];
+  const year = wibNow.getFullYear();
+  const updateTime = `${String(wibNow.getHours()).padStart(2, "0")}:${String(wibNow.getMinutes()).padStart(2, "0")}`;
+
+  const content: any[] = [];
+  content.push({ tag: "p", children: [`Pembaruan pada ${today}, ${date} ${month} ${year} pukul ${updateTime} WIB`] });
+  content.push({ tag: "br" });
+  content.push({ tag: "br" });
+
+  for (const hari of VALID_DAYS) {
+    if (jadwalData.harian[hari] && jadwalData.harian[hari].length > 0) {
+      content.push({ tag: "p", children: [{ tag: "strong", children: [hari] }] });
+      jadwalData.harian[hari].forEach((anime, idx) => {
+        const i = idx + 1;
+        if (typeof anime === "object" && anime.link) {
+          content.push({ tag: "p", children: [`   ${i}. `, { tag: "a", attrs: { href: anime.link }, children: [anime.judul] }] });
+        } else if (typeof anime === "object") {
+          content.push({ tag: "p", children: [`   ${i}. ${anime.judul}`] });
+        } else {
+          content.push({ tag: "p", children: [`   ${i}. ${anime}`] });
+        }
+      });
+      content.push({ tag: "br" });
+      content.push({ tag: "br" });
+    }
+  }
+  return content;
+}
+
+async function updateTelegraph(): Promise<boolean> {
+  if (!jadwalData.telegraph_token) return false;
+  const title = "Jadwal Donghua CA3D ";
+  const content = generateTelegraphContent();
+
+  if (jadwalData.telegraph_url) {
+    try {
+      const path = jadwalData.telegraph_url.split("/").pop()!;
+      const url = await updateTelegraphPage(jadwalData.telegraph_token, path, title, content);
+      if (url) {
+        jadwalData.telegraph_url = url;
+        await saveJadwalData();
+        return true;
+      }
+    } catch (e) { console.error("Telegraph update error:", e); }
+  }
+
+  const url = await createTelegraphPage(jadwalData.telegraph_token, title, content);
+  if (url) {
+    jadwalData.telegraph_url = url;
+    await saveJadwalData();
+    return true;
+  }
+  return false;
+}
+
+interface ScheduleItem {
+  type: string;
+  text: string;
+  hari?: string;
+  anime?: string | JadwalItem;
+  hash?: number;
+  index?: number;
+  data?: UpcomingItem;
+}
+
+function getAllScheduleItems(): ScheduleItem[] {
+  const items: ScheduleItem[] = [];
+  for (const hari of VALID_DAYS) {
+    for (const anime of jadwalData.harian[hari]) {
+      if (typeof anime === "object") {
+        items.push({ type: "harian", text: `${anime.judul} (${hari})`, hari, anime, hash: Math.abs(hashCode(anime.judul)) % 1000 });
+      } else {
+        items.push({ type: "harian", text: `${anime} (${hari})`, hari, anime, hash: Math.abs(hashCode(anime)) % 1000 });
+      }
+    }
+  }
+  for (let i = 0; i < jadwalData.upcoming.length; i++) {
+    items.push({ type: "upcoming", text: `${jadwalData.upcoming[i].judul} (Upcoming)`, index: i, data: jadwalData.upcoming[i] });
+  }
+  return items;
+}
+
+function hashCode(str: string): number {
+  let hash = 0;
+  for (let i = 0; i < str.length; i++) {
+    const char = str.charCodeAt(i);
+    hash = ((hash << 5) - hash) + char;
+    hash = hash & hash;
+  }
+  return hash;
+}
+
+function generateDeleteKeyboard(page: number = 1, itemsPerPage: number = 10): TelegramBot.InlineKeyboardButton[][] {
+  const allItems = getAllScheduleItems();
+  const totalItems = allItems.length;
+  const totalPages = Math.ceil(totalItems / itemsPerPage);
+
+  if (totalPages === 0) {
+    return [[{ text: "Belum ada jadwal", callback_data: "jd_back" }], [{ text: "Kembali", callback_data: "jd_back" }]];
+  }
+
+  page = Math.max(1, Math.min(page, totalPages));
+  const startIndex = (page - 1) * itemsPerPage;
+  const endIndex = Math.min(startIndex + itemsPerPage, totalItems);
+  const currentItems = allItems.slice(startIndex, endIndex);
+  const keyboard: TelegramBot.InlineKeyboardButton[][] = [];
+
+  for (let i = 0; i < currentItems.length; i += 2) {
+    const row: TelegramBot.InlineKeyboardButton[] = [];
+    for (let j = 0; j < 2; j++) {
+      if (i + j < currentItems.length) {
+        const item = currentItems[i + j];
+        const displayText = item.text.length > 20 ? item.text.substring(0, 20) + "..." : item.text;
+        let callbackData: string;
+        if (item.type === "harian") {
+          callbackData = `jd_dh_${item.hari}_${item.hash}`;
+        } else {
+          callbackData = `jd_du_${item.index}`;
+        }
+        row.push({ text: `\u274C ${displayText}`, callback_data: callbackData });
+      }
+    }
+    if (row.length > 0) keyboard.push(row);
+  }
+
+  if (totalPages > 1) {
+    const paginationRow: TelegramBot.InlineKeyboardButton[] = [];
+    if (page > 1) paginationRow.push({ text: "\u25C0\uFE0F", callback_data: `jd_dp_${page - 1}` });
+    let startPage = Math.max(1, page - 2);
+    const endPage = Math.min(totalPages, startPage + 4);
+    if (endPage - startPage < 4) startPage = Math.max(1, endPage - 4);
+    for (let p = startPage; p <= endPage; p++) {
+      if (p === page) {
+        paginationRow.push({ text: `\u2022 ${p} \u2022`, callback_data: `jd_dp_${p}` });
+      } else {
+        paginationRow.push({ text: String(p), callback_data: `jd_dp_${p}` });
+      }
+    }
+    if (page < totalPages) paginationRow.push({ text: "\u25B6\uFE0F", callback_data: `jd_dp_${page + 1}` });
+    keyboard.push(paginationRow);
+  }
+
+  keyboard.push([{ text: "Kembali", callback_data: "jd_back" }]);
+  return keyboard;
+}
+
+async function handleOwnerTextInput(msg: TelegramBot.Message, waiting: { type: string; extra?: string }) {
+  const text = msg.text?.trim() || "";
+  const chatId = msg.chat.id;
+
+  if (waiting.type === "jd_media_url") {
+    const hari = waiting.extra || "";
+    if (text.startsWith("http://") || text.startsWith("https://")) {
+      const lowerText = text.toLowerCase();
+      let mediaType = "photo";
+      if ([".mp4", ".mov", ".avi", ".gif"].some(ext => lowerText.includes(ext))) {
+        mediaType = "video";
+      }
+      jadwalData.media_jadwal[hari] = { type: mediaType, url: text };
+      await saveJadwalData();
+      const typeDisplay = mediaType === "photo" ? "Foto" : "Video/GIF";
+      await bot!.sendMessage(chatId,
+        `\u2705 <b>MEDIA ${hari.toUpperCase()} BERHASIL DISET!</b>\n\n` +
+        `\uD83C\uDFA8 <b>Type:</b> ${typeDisplay}\n` +
+        `\uD83D\uDD17 <b>URL:</b> <code>${text.substring(0, 50)}...</code>\n` +
+        `\uD83D\uDCC5 <b>Hari:</b> ${hari}\n\n` +
+        `<b>\u2728 Fitur Aktif:</b>\n` +
+        `\u2022 Media akan muncul saat jadwal hari ${hari}\n` +
+        `\u2022 Caption berisi jadwal lengkap\n` +
+        `\u2022 Otomatis di auto post\n` +
+        `\u2022 Support berbagai format\n\n` +
+        `<i>\uD83D\uDCA1 Jadwal hari ${hari} sekarang akan dikirim dengan ${typeDisplay.toLowerCase()}!</i>`,
+        { parse_mode: "HTML" }
+      );
+    } else {
+      await bot!.sendMessage(chatId,
+        `\u274C <b>Format URL Tidak Valid!</b>\n\n` +
+        `URL harus dimulai dengan <code>http://</code> atau <code>https://</code>\n\n` +
+        `<b>Atau kirim media langsung:</b>\n` +
+        `\u2022 Foto, video, atau GIF\n` +
+        `\u2022 Forward dari chat lain\n\n` +
+        `<b>Contoh URL yang benar:</b>\n` +
+        `<code>https://example.com/jadwal.jpg</code>\n` +
+        `<code>https://telegra.ph/file/abc123.mp4</code>`,
+        { parse_mode: "HTML" }
+      );
+    }
+    ownerWaitingState.delete(msg.from!.id);
+    return;
+  }
+
+  if (waiting.type === "jd_set_rules") {
+    if (!text) {
+      await bot!.sendMessage(chatId, "\u274C Rules tidak boleh kosong!");
+      return;
+    }
+    jadwalData.rules_text = text;
+    await saveJadwalData();
+    await bot!.sendMessage(chatId,
+      `\u2705 <b>Rules Berhasil Diset!</b>\n\n` +
+      `<b>\uD83D\uDCDC Preview Rules:</b>\n` +
+      `<blockquote>${formatRulesMessage()}</blockquote>\n\n` +
+      `<b>\u2728 Fitur Rules:</b>\n` +
+      `\u2022 Command: <code>/rules</code>\n` +
+      `\u2022 Anti spam: 20 menit\n` +
+      `\u2022 Auto delete: 10 detik\n` +
+      `\u2022 Support HTML tags\n\n` +
+      `<i>\uD83D\uDCA1 User sekarang bisa ketik /rules untuk melihat rules!</i>`,
+      { parse_mode: "HTML" }
+    );
+    ownerWaitingState.delete(msg.from!.id);
+    return;
+  }
+
+  if (waiting.type === "jd_tambah") {
+    if (!text.includes("|")) {
+      await bot!.sendMessage(chatId,
+        `\u274C <b>Format Salah!</b>\n\nHarus menggunakan separator <b>|</b>\n\nContoh:\n<code>Purple River Season 2|Senin</code>`,
+        { parse_mode: "HTML" }
+      );
+      return;
+    }
+
+    const parts = text.split("|").map(p => p.trim());
+
+    if (parts.length === 2) {
+      const [judul, hari] = parts;
+      if (!judul) { await bot!.sendMessage(chatId, "\u274C Judul anime tidak boleh kosong!"); return; }
+      if (!VALID_DAYS.includes(hari)) { await bot!.sendMessage(chatId, "\u274C Hari tidak valid! Gunakan: Senin, Selasa, Rabu, Kamis, Jumat, Sabtu, Minggu"); return; }
+      for (const anime of jadwalData.harian[hari]) {
+        if ((typeof anime === "object" && anime.judul === judul) || (typeof anime === "string" && anime === judul)) {
+          await bot!.sendMessage(chatId, `\u26A0\uFE0F <b>${judul}</b> sudah ada di hari ${hari}!`, { parse_mode: "HTML" }); return;
+        }
+      }
+      jadwalData.harian[hari].push(judul);
+      await saveJadwalData();
+      let telegraphUpdated = "";
+      if (jadwalData.telegraph_token) {
+        telegraphUpdated = (await updateTelegraph()) ? "\n\uD83D\uDCF0 <b>Telegraph:</b> Otomatis terupdate \u2705" : "\n\uD83D\uDCF0 <b>Telegraph:</b> Gagal update \u274C";
+      }
+      await bot!.sendMessage(chatId,
+        `\u2705 <b>Jadwal Harian Berhasil Ditambah!</b>\n\n\uD83D\uDCDD <b>Anime:</b> ${judul}\n\uD83D\uDCC5 <b>Hari:</b> ${hari}${telegraphUpdated}\n\n<i>\uD83D\uDCA1 Akan muncul di jadwal harian tanpa link!</i>`,
+        { parse_mode: "HTML" }
+      );
+    } else if (parts.length === 3) {
+      const [judul, hari, param3] = parts;
+      if (!judul) { await bot!.sendMessage(chatId, "\u274C Judul anime tidak boleh kosong!"); return; }
+      if (!VALID_DAYS.includes(hari)) { await bot!.sendMessage(chatId, "\u274C Hari tidak valid!"); return; }
+
+      if (param3.startsWith("http://") || param3.startsWith("https://")) {
+        for (const anime of jadwalData.harian[hari]) {
+          if ((typeof anime === "object" && anime.judul === judul) || (typeof anime === "string" && anime === judul)) {
+            await bot!.sendMessage(chatId, `\u26A0\uFE0F <b>${judul}</b> sudah ada di hari ${hari}!`, { parse_mode: "HTML" }); return;
+          }
+        }
+        jadwalData.harian[hari].push({ judul, link: param3 });
+        await saveJadwalData();
+        let telegraphUpdated = "";
+        if (jadwalData.telegraph_token) {
+          telegraphUpdated = (await updateTelegraph()) ? "\n\uD83D\uDCF0 <b>Telegraph:</b> Otomatis terupdate \u2705" : "\n\uD83D\uDCF0 <b>Telegraph:</b> Gagal update \u274C";
+        }
+        await bot!.sendMessage(chatId,
+          `\u2705 <b>Jadwal Harian dengan Link Berhasil Ditambah!</b>\n\n\uD83D\uDCDD <b>Anime:</b> ${judul}\n\uD83D\uDCC5 <b>Hari:</b> ${hari}\n\uD83D\uDD17 <b>Link:</b> <a href='${param3}'>Preview</a>${telegraphUpdated}\n\n<i>\uD83D\uDCA1 Akan muncul di jadwal harian sebagai hyperlink!</i>`,
+          { parse_mode: "HTML" }
+        );
+      } else {
+        const tanggal = param3;
+        if (jadwalData.upcoming.some(up => up.judul === judul)) {
+          await bot!.sendMessage(chatId, `\u26A0\uFE0F <b>${judul}</b> sudah ada di upcoming!`, { parse_mode: "HTML" }); return;
+        }
+        jadwalData.upcoming.push({ judul, hari, tanggal });
+        await saveJadwalData();
+        await bot!.sendMessage(chatId,
+          `\u2705 <b>Upcoming Tanpa Link Berhasil Ditambah!</b>\n\n\uD83D\uDCDD <b>Anime:</b> ${judul}\n\uD83D\uDCC5 <b>Rilis:</b> ${hari}, ${tanggal}\n\n<i>\uD83D\uDCA1 Akan muncul di blockquote tanpa link preview!</i>`,
+          { parse_mode: "HTML" }
+        );
+      }
+    } else if (parts.length === 4) {
+      const [judul, hari, tanggal, param4] = parts;
+      if (!judul || !hari || !tanggal) { await bot!.sendMessage(chatId, "\u274C Judul, hari, dan tanggal harus diisi!"); return; }
+      if (!VALID_DAYS.includes(hari)) { await bot!.sendMessage(chatId, "\u274C Hari tidak valid!"); return; }
+      if (jadwalData.upcoming.some(up => up.judul === judul)) {
+        await bot!.sendMessage(chatId, `\u26A0\uFE0F <b>${judul}</b> sudah ada di upcoming!`, { parse_mode: "HTML" }); return;
+      }
+      if (param4.startsWith("http://") || param4.startsWith("https://")) {
+        jadwalData.upcoming.push({ judul, hari, tanggal, link: param4 });
+        await saveJadwalData();
+        await bot!.sendMessage(chatId,
+          `\u2705 <b>Upcoming dengan Link Berhasil Ditambah!</b>\n\n\uD83D\uDCDD <b>Anime:</b> ${judul}\n\uD83D\uDCC5 <b>Rilis:</b> ${hari}, ${tanggal}\n\uD83D\uDD17 <b>Preview:</b> <a href='${param4}'>Link</a>\n\n<i>\uD83D\uDCA1 Akan muncul di blockquote hijau dengan link preview!</i>`,
+          { parse_mode: "HTML" }
+        );
+      } else if (param4) {
+        jadwalData.upcoming.push({ judul, hari, tanggal, season: param4 });
+        await saveJadwalData();
+        await bot!.sendMessage(chatId,
+          `\u2705 <b>Upcoming dengan Season Berhasil Ditambah!</b>\n\n\uD83D\uDCDD <b>Anime:</b> ${judul}\n\uD83D\uDCFA <b>Season:</b> ${param4}\n\uD83D\uDCC5 <b>Rilis:</b> ${hari}, ${tanggal}\n\n<i>\uD83D\uDCA1 Akan muncul di blockquote tanpa link preview!</i>`,
+          { parse_mode: "HTML" }
+        );
+      } else {
+        jadwalData.upcoming.push({ judul, hari, tanggal });
+        await saveJadwalData();
+        await bot!.sendMessage(chatId,
+          `\u2705 <b>Upcoming Tanpa Link dan Season Berhasil Ditambah!</b>\n\n\uD83D\uDCDD <b>Anime:</b> ${judul}\n\uD83D\uDCC5 <b>Rilis:</b> ${hari}, ${tanggal}\n\n<i>\uD83D\uDCA1 Akan muncul di blockquote tanpa link dan season!</i>`,
+          { parse_mode: "HTML" }
+        );
+      }
+    } else if (parts.length === 5) {
+      const [judul, hari, tanggal, link, season] = parts;
+      if (!judul || !hari || !tanggal || !link || !season) { await bot!.sendMessage(chatId, "\u274C Semua field harus diisi!"); return; }
+      if (!VALID_DAYS.includes(hari)) { await bot!.sendMessage(chatId, "\u274C Hari tidak valid!"); return; }
+      if (!link.startsWith("http://") && !link.startsWith("https://")) { await bot!.sendMessage(chatId, "\u274C Link harus dimulai dengan http:// atau https://"); return; }
+      if (jadwalData.upcoming.some(up => up.judul === judul)) {
+        await bot!.sendMessage(chatId, `\u26A0\uFE0F <b>${judul}</b> sudah ada di upcoming!`, { parse_mode: "HTML" }); return;
+      }
+      jadwalData.upcoming.push({ judul, hari, tanggal, link, season });
+      await saveJadwalData();
+      await bot!.sendMessage(chatId,
+        `\u2705 <b>Upcoming Lengkap Berhasil Ditambah!</b>\n\n\uD83D\uDCDD <b>Anime:</b> ${judul}\n\uD83D\uDCFA <b>Season:</b> ${season}\n\uD83D\uDCC5 <b>Rilis:</b> ${hari}, ${tanggal}\n\uD83D\uDD17 <b>Preview:</b> <a href='${link}'>Link</a>\n\n<i>\uD83D\uDCA1 Akan muncul di blockquote hijau lengkap seperti foto contoh!</i>`,
+        { parse_mode: "HTML" }
+      );
+    } else {
+      await bot!.sendMessage(chatId,
+        `\u274C <b>Format Salah!</b>\n\n` +
+        `<b>Format yang didukung:</b>\n` +
+        `\u2022 <code>Judul|Hari</code> (harian tanpa link)\n` +
+        `\u2022 <code>Judul|Hari|Link</code> (harian dengan link)\n` +
+        `\u2022 <code>Judul|Hari|Tanggal</code> (upcoming tanpa link/season)\n` +
+        `\u2022 <code>Judul|Hari|Tanggal|Link</code> (upcoming dengan link)\n` +
+        `\u2022 <code>Judul|Hari|Tanggal|Season</code> (upcoming dengan season)\n` +
+        `\u2022 <code>Judul|Hari|Tanggal|Link|Season</code> (upcoming lengkap)`,
+        { parse_mode: "HTML" }
+      );
+    }
+    ownerWaitingState.delete(msg.from!.id);
+    return;
+  }
+
+  if (waiting.type === "jd_add_channel") {
+    if (!(text.startsWith("-") && text.length > 5)) {
+      await bot!.sendMessage(chatId,
+        `\u274C <b>Format Chat ID Salah!</b>\n\nChat ID channel/group harus:\n\u2022 Dimulai dengan tanda <b>-</b>\n\u2022 Berupa angka panjang\n\u2022 Contoh: <code>-1001234567890</code>\n\n<b>Support channel DAN group!</b>`,
+        { parse_mode: "HTML" }
+      );
+      ownerWaitingState.delete(msg.from!.id);
+      return;
+    }
+    if (jadwalData.channels.includes(text)) {
+      await bot!.sendMessage(chatId,
+        `\u26A0\uFE0F <b>Channel/Group Sudah Terdaftar!</b>\n\n\uD83D\uDCFA <b>Chat ID:</b> <code>${text}</code>\n\n<i>\uD83D\uDCA1 Channel/Group ini sudah ada dalam daftar auto posting bergiliran!</i>`,
+        { parse_mode: "HTML" }
+      );
+      ownerWaitingState.delete(msg.from!.id);
+      return;
+    }
+    try {
+      const testMsg = await bot!.sendMessage(text, "\uD83D\uDD27 <i>Testing access...</i>", { parse_mode: "HTML" });
+      try { await bot!.deleteMessage(text, testMsg.message_id); } catch {}
+      jadwalData.channels.push(text);
+      await saveJadwalData();
+      await bot!.sendMessage(chatId,
+        `\u2705 <b>Channel/Group Berhasil Ditambah!</b>\n\n` +
+        `\uD83D\uDCFA <b>Chat ID:</b> <code>${text}</code>\n` +
+        `\uD83D\uDD17 <b>Status:</b> Terhubung\n` +
+        `\uD83D\uDCCA <b>Total Channel/Group:</b> ${jadwalData.channels.length}\n\n` +
+        `<b>\uD83D\uDD04 Urutan Auto Posting Bergiliran:</b>\n` +
+        jadwalData.channels.map((ch, i) => `  ${i + 1}. <code>${ch}</code> \u2192 +${i} menit`).join("\n") +
+        `\n\n<i>\uD83D\uDCA1 Bot siap posting bergiliran format seperti foto contoh!</i>`,
+        { parse_mode: "HTML" }
+      );
+    } catch (e: any) {
+      const errorMsg = String(e).toLowerCase();
+      if (errorMsg.includes("chat not found")) {
+        await bot!.sendMessage(chatId, `\u274C <b>Channel/Group Tidak Ditemukan!</b>\n\nPastikan Chat ID benar dan bot pernah di-add`, { parse_mode: "HTML" });
+      } else if (errorMsg.includes("not enough rights")) {
+        await bot!.sendMessage(chatId, `\u274C <b>Permission Denied!</b>\n\nBot belum jadi admin atau tidak punya izin posting`, { parse_mode: "HTML" });
+      } else {
+        await bot!.sendMessage(chatId, `\u274C Error: ${String(e)}`, { parse_mode: "HTML" });
+      }
+    }
+    ownerWaitingState.delete(msg.from!.id);
+    return;
+  }
+
+  if (waiting.type === "jd_set_time") {
+    if (!(text.includes(":") && text.length === 5)) {
+      await bot!.sendMessage(chatId,
+        `\u274C <b>Format Jam Salah!</b>\n\nHarus format <b>HH:MM</b>\n\nContoh: <code>06:00</code> atau <code>18:15</code>`,
+        { parse_mode: "HTML" }
+      );
+      return;
+    }
+    try {
+      const [hourStr, minuteStr] = text.split(":");
+      const hour = parseInt(hourStr, 10);
+      const minute = parseInt(minuteStr, 10);
+      if (!(hour >= 0 && hour <= 23 && minute >= 0 && minute <= 59)) {
+        await bot!.sendMessage(chatId, "\u274C Jam/menit tidak valid!", { parse_mode: "HTML" });
+        return;
+      }
+      const oldTime = jadwalData.post_time;
+      jadwalData.post_time = text;
+      await saveJadwalData();
+      const scheduleInfo = jadwalData.channels.length > 0
+        ? jadwalData.channels.map((_, i) => {
+          const pm = (minute + i) % 60;
+          let ph = hour + Math.floor((minute + i) / 60);
+          if (ph >= 24) ph = ph % 24;
+          return `  \u2022 Channel/Group ${i + 1}: ${String(ph).padStart(2, "0")}:${String(pm).padStart(2, "0")} WIB`;
+        }).join("\n")
+        : "  Belum ada channel/group terdaftar";
+
+      await bot!.sendMessage(chatId,
+        `\u2705 <b>Jam Auto Post Berhasil Diupdate!</b>\n\n` +
+        `\u23F0 <b>Jam lama:</b> ${oldTime} WIB\n` +
+        `\u23F0 <b>Jam baru:</b> ${text} WIB\n\n` +
+        `<b>\uD83D\uDD04 Jadwal Posting Bergiliran:</b>\n` +
+        scheduleInfo +
+        `\n\n<i>\uD83D\uDCA1 Bot akan posting otomatis bergiliran sesuai jam yang sudah diset!</i>\n` +
+        `<i>\uD83C\uDF0F Menggunakan timezone WIB (UTC+7)</i>`,
+        { parse_mode: "HTML" }
+      );
+    } catch {
+      await bot!.sendMessage(chatId, "\u274C Format jam salah! Harus angka HH:MM");
+    }
+    ownerWaitingState.delete(msg.from!.id);
+    return;
+  }
+}
+
+async function handleOwnerMediaInput(msg: TelegramBot.Message) {
+  const waiting = ownerWaitingState.get(msg.from!.id);
+  if (!waiting || waiting.type !== "jd_media_url") return;
+  const hari = waiting.extra || "";
+  const chatId = msg.chat.id;
+
+  try {
+    if (msg.photo && msg.photo.length > 0) {
+      const fileId = msg.photo[msg.photo.length - 1].file_id;
+      jadwalData.media_jadwal[hari] = { type: "photo", url: fileId };
+      await saveJadwalData();
+      await bot!.sendMessage(chatId,
+        `\u2705 <b>FOTO ${hari.toUpperCase()} BERHASIL DISET!</b>\n\n` +
+        `\uD83D\uDCF8 <b>Type:</b> Foto\n\uD83D\uDCC5 <b>Hari:</b> ${hari}\n\uD83C\uDFA8 <b>Status:</b> Siap digunakan\n\n` +
+        `<b>\u2728 Fitur Aktif:</b>\n\u2022 Foto akan muncul saat jadwal hari ${hari}\n\u2022 Caption berisi jadwal lengkap\n\u2022 Otomatis di auto post\n\n` +
+        `<i>\uD83D\uDCA1 Jadwal hari ${hari} sekarang akan dikirim dengan foto!</i>`,
+        { parse_mode: "HTML" }
+      );
+    } else if (msg.video) {
+      const fileId = msg.video.file_id;
+      jadwalData.media_jadwal[hari] = { type: "video", url: fileId };
+      await saveJadwalData();
+      await bot!.sendMessage(chatId,
+        `\u2705 <b>VIDEO ${hari.toUpperCase()} BERHASIL DISET!</b>\n\n` +
+        `\uD83C\uDFAC <b>Type:</b> Video/GIF\n\uD83D\uDCC5 <b>Hari:</b> ${hari}\n\uD83C\uDFA8 <b>Status:</b> Siap digunakan\n\n` +
+        `<b>\u2728 Fitur Aktif:</b>\n\u2022 Video/GIF akan muncul saat jadwal hari ${hari}\n\u2022 Caption berisi jadwal lengkap\n\u2022 Otomatis di auto post\n\n` +
+        `<i>\uD83D\uDCA1 Jadwal hari ${hari} sekarang akan dikirim dengan video/GIF!</i>`,
+        { parse_mode: "HTML" }
+      );
+    } else if (msg.animation) {
+      const fileId = msg.animation.file_id;
+      jadwalData.media_jadwal[hari] = { type: "video", url: fileId };
+      await saveJadwalData();
+      await bot!.sendMessage(chatId,
+        `\u2705 <b>VIDEO ${hari.toUpperCase()} BERHASIL DISET!</b>\n\n` +
+        `\uD83C\uDFAC <b>Type:</b> Video/GIF\n\uD83D\uDCC5 <b>Hari:</b> ${hari}\n\uD83C\uDFA8 <b>Status:</b> Siap digunakan\n\n` +
+        `<b>\u2728 Fitur Aktif:</b>\n\u2022 Video/GIF akan muncul saat jadwal hari ${hari}\n\u2022 Caption berisi jadwal lengkap\n\u2022 Otomatis di auto post\n\n` +
+        `<i>\uD83D\uDCA1 Jadwal hari ${hari} sekarang akan dikirim dengan video/GIF!</i>`,
+        { parse_mode: "HTML" }
+      );
+    } else {
+      await bot!.sendMessage(chatId,
+        `\u274C <b>Format Media Tidak Didukung!</b>\n\n<b>Format yang didukung:</b>\n\u2022 Foto: JPG, PNG, WEBP\n\u2022 Video: MP4, MOV, AVI\n\u2022 GIF: Animated GIF\n\n<b>Atau kirim URL media:</b>\n<code>https://example.com/media.jpg</code>`,
+        { parse_mode: "HTML" }
+      );
+      return;
+    }
+    ownerWaitingState.delete(msg.from!.id);
+  } catch (e) {
+    await bot!.sendMessage(chatId,
+      `\u274C <b>Error Upload Media!</b>\n\n\uD83D\uDC1B <b>Error:</b> <code>${String(e).substring(0, 100)}</code>\n\n<i>\uD83D\uDCA1 Coba kirim media yang berbeda atau URL!</i>`,
+      { parse_mode: "HTML" }
+    );
+  }
+}
+
+function startAutoPostScheduler() {
+  if (autoPostInterval) clearInterval(autoPostInterval);
+  autoPostInterval = setInterval(async () => {
+    if (!jadwalData.auto_post_enabled || !jadwalData.channels.length || !bot) return;
+    const now = new Date();
+    const wibTime = new Date(now.toLocaleString("en-US", { timeZone: "Asia/Jakarta" }));
+    const currentTime = `${String(wibTime.getHours()).padStart(2, "0")}:${String(wibTime.getMinutes()).padStart(2, "0")}`;
+    const today = wibTime.toISOString().split("T")[0];
+
+    if (currentTime === jadwalData.post_time && lastAutoPostDate !== today) {
+      lastAutoPostDate = today;
+      if (jadwalData.telegraph_token) await updateTelegraph();
+      const message = formatJadwalHariIni();
+      for (let i = 0; i < jadwalData.channels.length; i++) {
+        setTimeout(async () => {
+          try {
+            await sendJadwalWithMedia(jadwalData.channels[i], message);
+          } catch (err) { console.error(`Auto post to ${jadwalData.channels[i]} failed:`, err); }
+        }, i * 60000);
+      }
+      try {
+        await bot!.sendMessage(BOT_OWNER_ID, `Auto Post Bergiliran Berhasil!\n\nTarget: ${jadwalData.channels.length} channel/group`, { parse_mode: "HTML" });
+      } catch {}
+    }
+  }, 30000);
+}
+
 function buildOwnerMenuKeyboard(): TelegramBot.InlineKeyboardButton[][] {
   return [
-    [{ text: "Daftar Grup", callback_data: `owner_groups` },
-     { text: "Kelola Grup", callback_data: `owner_manage` }],
-    [{ text: "Statistik Global", callback_data: `owner_stats` },
-     { text: "Log Aktivitas", callback_data: `owner_logs` }],
-    [{ text: "Broadcast", callback_data: `owner_broadcast_menu` }],
-    [{ text: "Perbarui Info", callback_data: `owner_refresh` }],
-    [{ text: "Tutup", callback_data: `menu_close` }],
+    [{ text: "Tambah Jadwal", callback_data: "jd_tambah" },
+     { text: "Hapus Jadwal", callback_data: "jd_hapus" }],
+    [{ text: "Lihat Semua", callback_data: "jd_lihat" },
+     { text: "Preview Hari Ini", callback_data: "jd_preview" }],
+    [{ text: "Kelola Channel", callback_data: "jd_manage_channels" },
+     { text: "Set Jam Post", callback_data: "jd_set_time" }],
+    [{ text: "Setup Telegraph", callback_data: "jd_setup_telegraph" },
+     { text: "Toggle Auto Post", callback_data: "jd_toggle_auto" }],
+    [{ text: "Set Rules", callback_data: "jd_set_rules" },
+     { text: "Preview Rules", callback_data: "jd_preview_rules" }],
+    [{ text: "Set Media Jadwal", callback_data: "jd_set_media" }],
+    [{ text: "Daftar Grup", callback_data: "owner_groups" },
+     { text: "Kelola Grup", callback_data: "owner_manage" }],
+    [{ text: "Statistik Global", callback_data: "owner_stats" },
+     { text: "Log Aktivitas", callback_data: "owner_logs" }],
+    [{ text: "Broadcast", callback_data: "owner_broadcast_menu" }],
+    [{ text: "Perbarui Info", callback_data: "owner_refresh" }],
+    [{ text: "Tutup", callback_data: "menu_close" }],
   ];
 }
 
@@ -564,9 +1338,33 @@ async function buildOwnerPanelText(user: TelegramBot.User): Promise<string> {
   const now = new Date();
   const waktu = now.toLocaleString("id-ID", { timeZone: "Asia/Jakarta", dateStyle: "long", timeStyle: "short" });
 
-  return `<b>PANEL PEMILIK BOT</b>
+  const today = getTodayIndo();
+  const channelsInfo = jadwalData.channels.length > 0 ? `${jadwalData.channels.length} channel/group` : "\u274C Belum diset";
+  const timeInfo = jadwalData.post_time;
+  const autoStatus = jadwalData.auto_post_enabled ? "\uD83D\uDFE2 AKTIF" : "\uD83D\uDD34 NONAKTIF";
+  const telegraphStatus = jadwalData.telegraph_token ? "\uD83D\uDFE2 AKTIF" : "\uD83D\uDD34 NONAKTIF";
+  const rulesStatus = jadwalData.rules_text ? "\uD83D\uDFE2 SUDAH DISET" : "\uD83D\uDD34 BELUM DISET";
+  const mediaCount = Object.values(jadwalData.media_jadwal).filter(m => m.url).length;
+  const mediaStatus = mediaCount > 0 ? `\uD83D\uDFE2 ${mediaCount}/7 HARI` : "\uD83D\uDD34 BELUM DISET";
+  const jadwalHariIni = jadwalData.harian[today]?.length || 0;
+  const totalMinggu = Object.values(jadwalData.harian).reduce((sum, arr) => sum + arr.length, 0);
+  const nextPost = !jadwalData.auto_post_enabled ? "Tidak ada" : `Bergiliran setiap hari jam ${jadwalData.post_time}`;
 
-<b>Status Sistem:</b>
+  return `<b>\uD83C\uDFAC PANEL ADMIN JADWAL DONGHUA</b>
+
+<b>\uD83D\uDCCA Status Sistem:</b>
+\uD83D\uDCC5 Hari ini: <b>${today}</b>
+\uD83D\uDCDD Jadwal hari ini: <b>${jadwalHariIni} anime</b>
+\uD83D\uDCC8 Total minggu ini: <b>${totalMinggu} anime</b>
+\uD83D\uDCFA Channel/Group: <b>${channelsInfo}</b>
+\u23F0 Jam auto post: <b>${timeInfo} WIB</b>
+\uD83E\uDD16 Status: <b>${autoStatus}</b>
+\uD83D\uDCF0 Telegraph: <b>${telegraphStatus}</b>
+\uD83D\uDCDC Rules: <b>${rulesStatus}</b>
+\uD83C\uDFA8 Media Jadwal: <b>${mediaStatus}</b>
+\u23ED\uFE0F Posting: <b>${nextPost}</b>
+
+<b>Status Bot Moderasi:</b>
 Pemilik: ${getUserMention(user)}
 Waktu: <b>${waktu} WIB</b>
 Total Grup: <b>${allGroups.length}</b>
@@ -632,6 +1430,9 @@ export async function startBot() {
 
   bot = new TelegramBot(token, { polling: true });
   console.log("Telegram bot started in polling mode");
+
+  await loadJadwalData();
+  startAutoPostScheduler();
 
   try {
     const me = await bot.getMe();
@@ -868,6 +1669,27 @@ Wajib Sub Diblokir: <b>${stats.forceJoinBlocked}</b>`;
   bot.onText(/\/rules/, async (msg) => {
     try {
       if (msg.chat.type === "private") return;
+
+      if (jadwalData.rules_text) {
+        const now = Date.now();
+        if (!isBotOwner(msg.from?.id || 0) && lastRulesTime && (now - lastRulesTime) < 20 * 60 * 1000) {
+          try { await bot!.deleteMessage(msg.chat.id, msg.message_id); } catch {}
+          const remaining = Math.ceil((20 * 60 * 1000 - (now - lastRulesTime)) / 60000);
+          const antiSpamMsg = await bot!.sendMessage(msg.chat.id,
+            `\u26A0\uFE0F <i>Command /rules bisa digunakan lagi dalam ${remaining} menit</i>`,
+            { parse_mode: "HTML" }
+          );
+          setTimeout(async () => { try { await bot!.deleteMessage(msg.chat.id, antiSpamMsg.message_id); } catch {} }, 10000);
+          return;
+        }
+        lastRulesTime = now;
+        try { await bot!.deleteMessage(msg.chat.id, msg.message_id); } catch {}
+        const rulesMsg = formatRulesMessage();
+        const sentMsg = await bot!.sendMessage(msg.chat.id, rulesMsg, { parse_mode: "HTML", disable_web_page_preview: true });
+        setTimeout(async () => { try { await bot!.deleteMessage(msg.chat.id, sentMsg.message_id); } catch {} }, 10000);
+        return;
+      }
+
       const chatId = msg.chat.id.toString();
       const settings = await storage.getSettings(chatId);
 
@@ -894,6 +1716,30 @@ Wajib Sub Diblokir: <b>${stats.forceJoinBlocked}</b>`;
       await bot!.sendMessage(msg.chat.id, rulesText, { parse_mode: "HTML" });
     } catch (err) {
       console.error("Error handling /rules:", err);
+    }
+  });
+
+  bot.onText(/\/jadwal/, async (msg) => {
+    try {
+      if (msg.chat.type === "private") return;
+
+      const now = Date.now();
+      if (!isBotOwner(msg.from?.id || 0) && lastJadwalTime && (now - lastJadwalTime) < 20 * 60 * 1000) {
+        try { await bot!.deleteMessage(msg.chat.id, msg.message_id); } catch {}
+        const remaining = Math.ceil((20 * 60 * 1000 - (now - lastJadwalTime)) / 60000);
+        const antiSpamMsg = await bot!.sendMessage(msg.chat.id,
+          `\u26A0\uFE0F <i>Command /jadwal bisa digunakan lagi dalam ${remaining} menit</i>`,
+          { parse_mode: "HTML" }
+        );
+        setTimeout(async () => { try { await bot!.deleteMessage(msg.chat.id, antiSpamMsg.message_id); } catch {} }, 10000);
+        return;
+      }
+      lastJadwalTime = now;
+      try { await bot!.deleteMessage(msg.chat.id, msg.message_id); } catch {}
+      const jadwalText = formatJadwalHariIni();
+      await sendJadwalWithMedia(msg.chat.id, jadwalText);
+    } catch (err) {
+      console.error("Error handling /jadwal:", err);
     }
   });
 
@@ -2644,6 +3490,428 @@ Force Sub Diblokir: <b>${totalForceSub}</b>`;
         return;
       }
 
+      // Jadwal Donghua callback handlers
+      if (data === "jd_back") {
+        if (!isBotOwner(query.from.id)) { await bot!.answerCallbackQuery(query.id, { text: "Hanya pemilik bot.", show_alert: true }); return; }
+        const text = await buildOwnerPanelText(query.from);
+        await bot!.editMessageText(text, { chat_id: chatId, message_id: msgId, parse_mode: "HTML", reply_markup: { inline_keyboard: buildOwnerMenuKeyboard() } });
+        await bot!.answerCallbackQuery(query.id);
+        return;
+      }
+
+      if (data === "jd_tambah") {
+        if (!isBotOwner(query.from.id)) { await bot!.answerCallbackQuery(query.id, { text: "Hanya pemilik bot.", show_alert: true }); return; }
+        ownerWaitingState.set(query.from.id, { type: "jd_tambah" });
+        await bot!.editMessageText(
+          `<b>\uD83D\uDCDD TAMBAH JADWAL DONGHUA</b>\n\n` +
+          `<b>Format Harian (tanpa link):</b>\n<code>Judul Anime|Hari</code>\nContoh: <code>Purple River Season 2|Senin</code>\n\n` +
+          `<b>Format Harian (dengan link):</b>\n<code>Judul Anime|Hari|Link</code>\nContoh: <code>Battle Through the Heavens|Selasa|https://link.com</code>\n\n` +
+          `<b>Format Upcoming (3 field):</b>\n<code>Judul|Hari|Tanggal</code>\nContoh: <code>Soul Land 2|Jumat|20 Januari 2025</code>\n\n` +
+          `<b>Format Upcoming (4 field - link):</b>\n<code>Judul|Hari|Tanggal|Link</code>\n\n` +
+          `<b>Format Upcoming (4 field - season):</b>\n<code>Judul|Hari|Tanggal|Season</code>\n\n` +
+          `<b>Format Upcoming Lengkap (5 field):</b>\n<code>Judul|Hari|Tanggal|Link|Season</code>\n\n` +
+          `<b>Hari yang valid:</b> Senin, Selasa, Rabu, Kamis, Jumat, Sabtu, Minggu\n\n` +
+          `<i>\uD83D\uDCA1 Kirim data jadwal sekarang di PM ini!</i>`,
+          { chat_id: chatId, message_id: msgId, parse_mode: "HTML", reply_markup: { inline_keyboard: [[{ text: "Kembali", callback_data: "jd_back" }]] } }
+        );
+        await bot!.answerCallbackQuery(query.id);
+        return;
+      }
+
+      if (data === "jd_hapus") {
+        if (!isBotOwner(query.from.id)) { await bot!.answerCallbackQuery(query.id, { text: "Hanya pemilik bot.", show_alert: true }); return; }
+        const keyboard = generateDeleteKeyboard(1);
+        await bot!.editMessageText(
+          `<b>\u274C HAPUS JADWAL DONGHUA</b>\n\nKlik tombol di bawah untuk menghapus jadwal:`,
+          { chat_id: chatId, message_id: msgId, parse_mode: "HTML", reply_markup: { inline_keyboard: keyboard } }
+        );
+        await bot!.answerCallbackQuery(query.id);
+        return;
+      }
+
+      if (data === "jd_lihat") {
+        if (!isBotOwner(query.from.id)) { await bot!.answerCallbackQuery(query.id, { text: "Hanya pemilik bot.", show_alert: true }); return; }
+        const jadwalText = formatJadwalLengkap();
+        await bot!.editMessageText(
+          `<b>\uD83D\uDCCB LIHAT SEMUA JADWAL</b>\n\n${jadwalText}`,
+          { chat_id: chatId, message_id: msgId, parse_mode: "HTML", disable_web_page_preview: true, reply_markup: { inline_keyboard: [[{ text: "Kembali", callback_data: "jd_back" }]] } }
+        );
+        await bot!.answerCallbackQuery(query.id);
+        return;
+      }
+
+      if (data === "jd_preview") {
+        if (!isBotOwner(query.from.id)) { await bot!.answerCallbackQuery(query.id, { text: "Hanya pemilik bot.", show_alert: true }); return; }
+        const previewText = formatJadwalHariIni();
+        await bot!.editMessageText(
+          `<b>\uD83D\uDC41 PREVIEW JADWAL HARI INI</b>\n\n${previewText}`,
+          { chat_id: chatId, message_id: msgId, parse_mode: "HTML", disable_web_page_preview: true, reply_markup: { inline_keyboard: [[{ text: "Kirim Sekarang", callback_data: "jd_send_now" }], [{ text: "Kembali", callback_data: "jd_back" }]] } }
+        );
+        await bot!.answerCallbackQuery(query.id);
+        return;
+      }
+
+      if (data === "jd_send_now") {
+        if (!isBotOwner(query.from.id)) { await bot!.answerCallbackQuery(query.id, { text: "Hanya pemilik bot.", show_alert: true }); return; }
+        if (jadwalData.channels.length === 0) {
+          await bot!.answerCallbackQuery(query.id, { text: "Belum ada channel/group terdaftar!", show_alert: true });
+          return;
+        }
+        if (jadwalData.telegraph_token) await updateTelegraph();
+        const message = formatJadwalHariIni();
+        for (let i = 0; i < jadwalData.channels.length; i++) {
+          setTimeout(async () => {
+            try {
+              await sendJadwalWithMedia(jadwalData.channels[i], message);
+            } catch (err) { console.error(`Send now to ${jadwalData.channels[i]} failed:`, err); }
+          }, i * 60000);
+        }
+        await bot!.editMessageText(
+          `\u2705 <b>Jadwal Berhasil Dikirim Bergiliran!</b>\n\n` +
+          `\uD83D\uDCFA Target: ${jadwalData.channels.length} channel/group\n` +
+          `\u23F0 Interval: 1 menit per channel/group\n\n` +
+          jadwalData.channels.map((ch, i) => `  ${i + 1}. <code>${ch}</code> \u2192 +${i} menit`).join("\n") +
+          `\n\n<i>\uD83D\uDCA1 Posting sedang berjalan bergiliran!</i>`,
+          { chat_id: chatId, message_id: msgId, parse_mode: "HTML", reply_markup: { inline_keyboard: [[{ text: "Kembali", callback_data: "jd_back" }]] } }
+        );
+        await bot!.answerCallbackQuery(query.id);
+        return;
+      }
+
+      if (data === "jd_manage_channels") {
+        if (!isBotOwner(query.from.id)) { await bot!.answerCallbackQuery(query.id, { text: "Hanya pemilik bot.", show_alert: true }); return; }
+        let channelText = `<b>\uD83D\uDCFA KELOLA CHANNEL/GROUP</b>\n\n`;
+        const keyboard: TelegramBot.InlineKeyboardButton[][] = [];
+        if (jadwalData.channels.length === 0) {
+          channelText += `\u274C Belum ada channel/group terdaftar\n\n`;
+        } else {
+          channelText += `<b>Channel/Group Terdaftar:</b>\n`;
+          jadwalData.channels.forEach((ch, i) => {
+            channelText += `  ${i + 1}. <code>${ch}</code>\n`;
+            keyboard.push([{ text: `\u274C Hapus ${ch}`, callback_data: `jd_dc_${i}` }]);
+          });
+          channelText += `\n`;
+        }
+        channelText += `<b>\uD83D\uDD04 Urutan Auto Posting Bergiliran:</b>\n`;
+        if (jadwalData.channels.length > 0) {
+          jadwalData.channels.forEach((_, i) => {
+            channelText += `  Channel/Group ${i + 1} \u2192 +${i} menit\n`;
+          });
+        } else {
+          channelText += `  Belum ada channel/group\n`;
+        }
+        keyboard.push([{ text: "\u2795 Tambah Channel/Group", callback_data: "jd_add_channel" }]);
+        keyboard.push([{ text: "Kembali", callback_data: "jd_back" }]);
+        await bot!.editMessageText(channelText, { chat_id: chatId, message_id: msgId, parse_mode: "HTML", reply_markup: { inline_keyboard: keyboard } });
+        await bot!.answerCallbackQuery(query.id);
+        return;
+      }
+
+      if (data === "jd_add_channel") {
+        if (!isBotOwner(query.from.id)) { await bot!.answerCallbackQuery(query.id, { text: "Hanya pemilik bot.", show_alert: true }); return; }
+        ownerWaitingState.set(query.from.id, { type: "jd_add_channel" });
+        await bot!.editMessageText(
+          `<b>\u2795 TAMBAH CHANNEL/GROUP</b>\n\n` +
+          `Kirim <b>Chat ID</b> channel/group di PM ini\n\n` +
+          `<b>Cara mendapatkan Chat ID:</b>\n` +
+          `1. Add bot ke channel/group\n` +
+          `2. Jadikan bot sebagai admin\n` +
+          `3. Forward pesan dari channel ke @userinfobot\n` +
+          `4. Atau gunakan @RawDataBot\n\n` +
+          `<b>Format:</b> <code>-1001234567890</code>\n\n` +
+          `<b>Bot support:</b> Channel DAN Group!\n\n` +
+          `<i>\uD83D\uDCA1 Kirim Chat ID sekarang!</i>`,
+          { chat_id: chatId, message_id: msgId, parse_mode: "HTML", reply_markup: { inline_keyboard: [[{ text: "Kembali", callback_data: "jd_back" }]] } }
+        );
+        await bot!.answerCallbackQuery(query.id);
+        return;
+      }
+
+      if (data.startsWith("jd_dc_")) {
+        if (!isBotOwner(query.from.id)) { await bot!.answerCallbackQuery(query.id, { text: "Hanya pemilik bot.", show_alert: true }); return; }
+        const idx = parseInt(data.replace("jd_dc_", ""), 10);
+        if (idx >= 0 && idx < jadwalData.channels.length) {
+          const removed = jadwalData.channels.splice(idx, 1)[0];
+          await saveJadwalData();
+          await bot!.answerCallbackQuery(query.id, { text: `Channel ${removed} dihapus!`, show_alert: true });
+          let channelText = `<b>\uD83D\uDCFA KELOLA CHANNEL/GROUP</b>\n\n`;
+          const keyboard: TelegramBot.InlineKeyboardButton[][] = [];
+          if (jadwalData.channels.length === 0) {
+            channelText += `\u274C Belum ada channel/group terdaftar\n\n`;
+          } else {
+            channelText += `<b>Channel/Group Terdaftar:</b>\n`;
+            jadwalData.channels.forEach((ch, i) => {
+              channelText += `  ${i + 1}. <code>${ch}</code>\n`;
+              keyboard.push([{ text: `\u274C Hapus ${ch}`, callback_data: `jd_dc_${i}` }]);
+            });
+          }
+          keyboard.push([{ text: "\u2795 Tambah Channel/Group", callback_data: "jd_add_channel" }]);
+          keyboard.push([{ text: "Kembali", callback_data: "jd_back" }]);
+          await bot!.editMessageText(channelText, { chat_id: chatId, message_id: msgId, parse_mode: "HTML", reply_markup: { inline_keyboard: keyboard } });
+        } else {
+          await bot!.answerCallbackQuery(query.id, { text: "Channel tidak ditemukan!", show_alert: true });
+        }
+        return;
+      }
+
+      if (data === "jd_set_time") {
+        if (!isBotOwner(query.from.id)) { await bot!.answerCallbackQuery(query.id, { text: "Hanya pemilik bot.", show_alert: true }); return; }
+        ownerWaitingState.set(query.from.id, { type: "jd_set_time" });
+        await bot!.editMessageText(
+          `<b>\u23F0 SET JAM AUTO POST</b>\n\n` +
+          `Jam saat ini: <b>${jadwalData.post_time} WIB</b>\n\n` +
+          `Kirim jam baru dalam format <b>HH:MM</b>\n\n` +
+          `Contoh:\n` +
+          `<code>06:00</code> - Pagi hari\n` +
+          `<code>12:00</code> - Siang hari\n` +
+          `<code>18:00</code> - Sore hari\n` +
+          `<code>21:00</code> - Malam hari\n\n` +
+          `<i>\uD83C\uDF0F Menggunakan timezone WIB (UTC+7)</i>\n\n` +
+          `<i>\uD83D\uDCA1 Kirim jam baru sekarang!</i>`,
+          { chat_id: chatId, message_id: msgId, parse_mode: "HTML", reply_markup: { inline_keyboard: [[{ text: "Kembali", callback_data: "jd_back" }]] } }
+        );
+        await bot!.answerCallbackQuery(query.id);
+        return;
+      }
+
+      if (data === "jd_toggle_auto") {
+        if (!isBotOwner(query.from.id)) { await bot!.answerCallbackQuery(query.id, { text: "Hanya pemilik bot.", show_alert: true }); return; }
+        jadwalData.auto_post_enabled = !jadwalData.auto_post_enabled;
+        await saveJadwalData();
+        const status = jadwalData.auto_post_enabled ? "\uD83D\uDFE2 AKTIF" : "\uD83D\uDD34 NONAKTIF";
+        await bot!.editMessageText(
+          `<b>\uD83E\uDD16 AUTO POST TOGGLED!</b>\n\n` +
+          `Status: <b>${status}</b>\n` +
+          `Jam: <b>${jadwalData.post_time} WIB</b>\n` +
+          `Channel/Group: <b>${jadwalData.channels.length}</b>\n\n` +
+          (jadwalData.auto_post_enabled
+            ? `<i>\uD83D\uDCA1 Bot akan otomatis posting bergiliran setiap hari!</i>`
+            : `<i>\uD83D\uDCA1 Auto posting bergiliran dinonaktifkan!</i>`),
+          { chat_id: chatId, message_id: msgId, parse_mode: "HTML", reply_markup: { inline_keyboard: [[{ text: "Kembali", callback_data: "jd_back" }]] } }
+        );
+        await bot!.answerCallbackQuery(query.id);
+        return;
+      }
+
+      if (data === "jd_setup_telegraph") {
+        if (!isBotOwner(query.from.id)) { await bot!.answerCallbackQuery(query.id, { text: "Hanya pemilik bot.", show_alert: true }); return; }
+        const keyboard: TelegramBot.InlineKeyboardButton[][] = [];
+        let tgText = `<b>\uD83D\uDCF0 SETUP TELEGRAPH</b>\n\n`;
+        if (jadwalData.telegraph_token) {
+          tgText += `Status: <b>\uD83D\uDFE2 AKTIF</b>\n`;
+          tgText += `Token: <code>${jadwalData.telegraph_token.substring(0, 10)}...</code>\n`;
+          if (jadwalData.telegraph_url) {
+            tgText += `URL: <a href="${jadwalData.telegraph_url}">Buka Telegraph</a>\n`;
+          }
+          tgText += `\n<i>\uD83D\uDCA1 Telegraph sudah aktif dan otomatis update saat jadwal berubah!</i>`;
+          keyboard.push([{ text: "\uD83D\uDD04 Update Telegraph", callback_data: "jd_update_telegraph" }]);
+        } else {
+          tgText += `Status: <b>\uD83D\uDD34 BELUM DISET</b>\n\n`;
+          tgText += `Telegraph digunakan untuk halaman jadwal lengkap semua hari.\n\n`;
+          tgText += `<i>\uD83D\uDCA1 Klik tombol di bawah untuk membuat akun Telegraph!</i>`;
+          keyboard.push([{ text: "\uD83D\uDD11 Buat Akun Telegraph", callback_data: "jd_create_telegraph" }]);
+        }
+        keyboard.push([{ text: "Kembali", callback_data: "jd_back" }]);
+        await bot!.editMessageText(tgText, { chat_id: chatId, message_id: msgId, parse_mode: "HTML", disable_web_page_preview: true, reply_markup: { inline_keyboard: keyboard } });
+        await bot!.answerCallbackQuery(query.id);
+        return;
+      }
+
+      if (data === "jd_create_telegraph") {
+        if (!isBotOwner(query.from.id)) { await bot!.answerCallbackQuery(query.id, { text: "Hanya pemilik bot.", show_alert: true }); return; }
+        const token = await createTelegraphAccount();
+        if (token) {
+          jadwalData.telegraph_token = token;
+          await saveJadwalData();
+          const updated = await updateTelegraph();
+          await bot!.editMessageText(
+            `\u2705 <b>Akun Telegraph Berhasil Dibuat!</b>\n\n` +
+            `\uD83D\uDD11 Token: <code>${token.substring(0, 10)}...</code>\n` +
+            (jadwalData.telegraph_url ? `\uD83D\uDD17 URL: <a href="${jadwalData.telegraph_url}">Buka Telegraph</a>\n` : "") +
+            `\uD83D\uDCF0 Page: ${updated ? "Berhasil dibuat" : "Gagal dibuat"}\n\n` +
+            `<i>\uD83D\uDCA1 Telegraph akan otomatis update saat jadwal berubah!</i>`,
+            { chat_id: chatId, message_id: msgId, parse_mode: "HTML", disable_web_page_preview: true, reply_markup: { inline_keyboard: [[{ text: "Kembali", callback_data: "jd_back" }]] } }
+          );
+        } else {
+          await bot!.editMessageText(
+            `\u274C <b>Gagal Membuat Akun Telegraph!</b>\n\nSilakan coba lagi nanti.`,
+            { chat_id: chatId, message_id: msgId, parse_mode: "HTML", reply_markup: { inline_keyboard: [[{ text: "Kembali", callback_data: "jd_back" }]] } }
+          );
+        }
+        await bot!.answerCallbackQuery(query.id);
+        return;
+      }
+
+      if (data === "jd_update_telegraph") {
+        if (!isBotOwner(query.from.id)) { await bot!.answerCallbackQuery(query.id, { text: "Hanya pemilik bot.", show_alert: true }); return; }
+        const updated = await updateTelegraph();
+        if (updated) {
+          await bot!.editMessageText(
+            `\u2705 <b>Telegraph Berhasil Diupdate!</b>\n\n` +
+            (jadwalData.telegraph_url ? `\uD83D\uDD17 URL: <a href="${jadwalData.telegraph_url}">Buka Telegraph</a>\n\n` : "") +
+            `<i>\uD83D\uDCA1 Halaman telegraph sudah menampilkan jadwal terbaru!</i>`,
+            { chat_id: chatId, message_id: msgId, parse_mode: "HTML", disable_web_page_preview: true, reply_markup: { inline_keyboard: [[{ text: "Kembali", callback_data: "jd_back" }]] } }
+          );
+        } else {
+          await bot!.editMessageText(
+            `\u274C <b>Gagal Update Telegraph!</b>\n\nPastikan token masih valid.`,
+            { chat_id: chatId, message_id: msgId, parse_mode: "HTML", reply_markup: { inline_keyboard: [[{ text: "Kembali", callback_data: "jd_back" }]] } }
+          );
+        }
+        await bot!.answerCallbackQuery(query.id);
+        return;
+      }
+
+      if (data === "jd_set_rules") {
+        if (!isBotOwner(query.from.id)) { await bot!.answerCallbackQuery(query.id, { text: "Hanya pemilik bot.", show_alert: true }); return; }
+        ownerWaitingState.set(query.from.id, { type: "jd_set_rules" });
+        await bot!.editMessageText(
+          `<b>\uD83D\uDCDC SET RULES</b>\n\n` +
+          `Kirim teks rules di PM ini.\n\n` +
+          `<b>HTML Tags yang didukung:</b>\n` +
+          `\u2022 <code>&lt;b&gt;bold&lt;/b&gt;</code>\n` +
+          `\u2022 <code>&lt;i&gt;italic&lt;/i&gt;</code>\n` +
+          `\u2022 <code>&lt;u&gt;underline&lt;/u&gt;</code>\n` +
+          `\u2022 <code>&lt;a href="url"&gt;link&lt;/a&gt;</code>\n` +
+          `\u2022 <code>&lt;code&gt;code&lt;/code&gt;</code>\n\n` +
+          `<i>\uD83D\uDCA1 Kirim teks rules sekarang!</i>`,
+          { chat_id: chatId, message_id: msgId, parse_mode: "HTML", reply_markup: { inline_keyboard: [[{ text: "Kembali", callback_data: "jd_back" }]] } }
+        );
+        await bot!.answerCallbackQuery(query.id);
+        return;
+      }
+
+      if (data === "jd_preview_rules") {
+        if (!isBotOwner(query.from.id)) { await bot!.answerCallbackQuery(query.id, { text: "Hanya pemilik bot.", show_alert: true }); return; }
+        const rulesMsg = formatRulesMessage();
+        await bot!.editMessageText(
+          `<b>\uD83D\uDCDC PREVIEW RULES</b>\n\n${rulesMsg}`,
+          { chat_id: chatId, message_id: msgId, parse_mode: "HTML", disable_web_page_preview: true, reply_markup: { inline_keyboard: [[{ text: "Kembali", callback_data: "jd_back" }]] } }
+        );
+        await bot!.answerCallbackQuery(query.id);
+        return;
+      }
+
+      if (data === "jd_set_media") {
+        if (!isBotOwner(query.from.id)) { await bot!.answerCallbackQuery(query.id, { text: "Hanya pemilik bot.", show_alert: true }); return; }
+        let mediaText = `<b>\uD83C\uDFA8 SET MEDIA JADWAL</b>\n\n`;
+        mediaText += `Pilih hari untuk set/hapus media:\n\n`;
+        const keyboard: TelegramBot.InlineKeyboardButton[][] = [];
+        for (const hari of VALID_DAYS) {
+          const media = jadwalData.media_jadwal[hari];
+          const status = media && media.url ? `\uD83D\uDFE2 ${media.type}` : "\uD83D\uDD34 Belum diset";
+          mediaText += `${hari}: ${status}\n`;
+          keyboard.push([
+            { text: `\uD83D\uDCE4 ${hari}`, callback_data: `jd_mu_${hari}` },
+            { text: `\u274C ${hari}`, callback_data: `jd_md_${hari}` },
+          ]);
+        }
+        keyboard.push([{ text: "Kembali", callback_data: "jd_back" }]);
+        await bot!.editMessageText(mediaText, { chat_id: chatId, message_id: msgId, parse_mode: "HTML", reply_markup: { inline_keyboard: keyboard } });
+        await bot!.answerCallbackQuery(query.id);
+        return;
+      }
+
+      if (data.startsWith("jd_mu_")) {
+        if (!isBotOwner(query.from.id)) { await bot!.answerCallbackQuery(query.id, { text: "Hanya pemilik bot.", show_alert: true }); return; }
+        const hari = data.replace("jd_mu_", "");
+        if (!VALID_DAYS.includes(hari)) { await bot!.answerCallbackQuery(query.id, { text: "Hari tidak valid!", show_alert: true }); return; }
+        ownerWaitingState.set(query.from.id, { type: "jd_media_url", extra: hari });
+        await bot!.editMessageText(
+          `<b>\uD83D\uDCE4 UPLOAD MEDIA ${hari.toUpperCase()}</b>\n\n` +
+          `<b>Cara set media:</b>\n` +
+          `1. Kirim <b>foto/video/GIF</b> langsung\n` +
+          `2. Atau kirim <b>URL media</b>\n\n` +
+          `<b>Format yang didukung:</b>\n` +
+          `\u2022 Foto: JPG, PNG, WEBP\n` +
+          `\u2022 Video: MP4, MOV, AVI\n` +
+          `\u2022 GIF: Animated GIF\n\n` +
+          `<b>Contoh URL:</b>\n` +
+          `<code>https://example.com/jadwal.jpg</code>\n\n` +
+          `<i>\uD83D\uDCA1 Kirim media atau URL sekarang!</i>`,
+          { chat_id: chatId, message_id: msgId, parse_mode: "HTML", reply_markup: { inline_keyboard: [[{ text: "Kembali", callback_data: "jd_set_media" }]] } }
+        );
+        await bot!.answerCallbackQuery(query.id);
+        return;
+      }
+
+      if (data.startsWith("jd_md_")) {
+        if (!isBotOwner(query.from.id)) { await bot!.answerCallbackQuery(query.id, { text: "Hanya pemilik bot.", show_alert: true }); return; }
+        const hari = data.replace("jd_md_", "");
+        if (!VALID_DAYS.includes(hari)) { await bot!.answerCallbackQuery(query.id, { text: "Hari tidak valid!", show_alert: true }); return; }
+        jadwalData.media_jadwal[hari] = { type: "", url: "" };
+        await saveJadwalData();
+        await bot!.answerCallbackQuery(query.id, { text: `Media ${hari} dihapus!`, show_alert: true });
+        let mediaText = `<b>\uD83C\uDFA8 SET MEDIA JADWAL</b>\n\nPilih hari untuk set/hapus media:\n\n`;
+        const keyboard: TelegramBot.InlineKeyboardButton[][] = [];
+        for (const h of VALID_DAYS) {
+          const media = jadwalData.media_jadwal[h];
+          const status = media && media.url ? `\uD83D\uDFE2 ${media.type}` : "\uD83D\uDD34 Belum diset";
+          mediaText += `${h}: ${status}\n`;
+          keyboard.push([
+            { text: `\uD83D\uDCE4 ${h}`, callback_data: `jd_mu_${h}` },
+            { text: `\u274C ${h}`, callback_data: `jd_md_${h}` },
+          ]);
+        }
+        keyboard.push([{ text: "Kembali", callback_data: "jd_back" }]);
+        await bot!.editMessageText(mediaText, { chat_id: chatId, message_id: msgId, parse_mode: "HTML", reply_markup: { inline_keyboard: keyboard } });
+        return;
+      }
+
+      if (data.startsWith("jd_dh_")) {
+        if (!isBotOwner(query.from.id)) { await bot!.answerCallbackQuery(query.id, { text: "Hanya pemilik bot.", show_alert: true }); return; }
+        const parts = data.replace("jd_dh_", "").split("_");
+        const hari = parts[0];
+        const hash = parseInt(parts[1], 10);
+        if (!jadwalData.harian[hari]) { await bot!.answerCallbackQuery(query.id, { text: "Hari tidak ditemukan!", show_alert: true }); return; }
+        const idx = jadwalData.harian[hari].findIndex((anime) => {
+          const title = typeof anime === "object" ? anime.judul : anime;
+          return Math.abs(hashCode(title)) % 1000 === hash;
+        });
+        if (idx === -1) { await bot!.answerCallbackQuery(query.id, { text: "Jadwal tidak ditemukan!", show_alert: true }); return; }
+        const removed = jadwalData.harian[hari].splice(idx, 1)[0];
+        await saveJadwalData();
+        if (jadwalData.telegraph_token) await updateTelegraph();
+        const removedTitle = typeof removed === "object" ? removed.judul : removed;
+        await bot!.answerCallbackQuery(query.id, { text: `${removedTitle} dihapus dari ${hari}!`, show_alert: true });
+        const keyboard = generateDeleteKeyboard(1);
+        await bot!.editMessageText(
+          `<b>\u274C HAPUS JADWAL DONGHUA</b>\n\n\u2705 <b>${removedTitle}</b> berhasil dihapus dari <b>${hari}</b>!\n\nKlik tombol di bawah untuk menghapus jadwal lain:`,
+          { chat_id: chatId, message_id: msgId, parse_mode: "HTML", reply_markup: { inline_keyboard: keyboard } }
+        );
+        return;
+      }
+
+      if (data.startsWith("jd_du_")) {
+        if (!isBotOwner(query.from.id)) { await bot!.answerCallbackQuery(query.id, { text: "Hanya pemilik bot.", show_alert: true }); return; }
+        const idx = parseInt(data.replace("jd_du_", ""), 10);
+        if (idx >= 0 && idx < jadwalData.upcoming.length) {
+          const removed = jadwalData.upcoming.splice(idx, 1)[0];
+          await saveJadwalData();
+          await bot!.answerCallbackQuery(query.id, { text: `${removed.judul} dihapus dari upcoming!`, show_alert: true });
+          const keyboard = generateDeleteKeyboard(1);
+          await bot!.editMessageText(
+            `<b>\u274C HAPUS JADWAL DONGHUA</b>\n\n\u2705 <b>${removed.judul}</b> berhasil dihapus dari upcoming!\n\nKlik tombol di bawah untuk menghapus jadwal lain:`,
+            { chat_id: chatId, message_id: msgId, parse_mode: "HTML", reply_markup: { inline_keyboard: keyboard } }
+          );
+        } else {
+          await bot!.answerCallbackQuery(query.id, { text: "Jadwal tidak ditemukan!", show_alert: true });
+        }
+        return;
+      }
+
+      if (data.startsWith("jd_dp_")) {
+        if (!isBotOwner(query.from.id)) { await bot!.answerCallbackQuery(query.id, { text: "Hanya pemilik bot.", show_alert: true }); return; }
+        const page = parseInt(data.replace("jd_dp_", ""), 10);
+        const keyboard = generateDeleteKeyboard(page);
+        await bot!.editMessageText(
+          `<b>\u274C HAPUS JADWAL DONGHUA</b>\n\nKlik tombol di bawah untuk menghapus jadwal:`,
+          { chat_id: chatId, message_id: msgId, parse_mode: "HTML", reply_markup: { inline_keyboard: keyboard } }
+        );
+        await bot!.answerCallbackQuery(query.id);
+        return;
+      }
+
       // Owner refresh panel
       if (data === "owner_refresh") {
         if (!isBotOwner(query.from.id)) {
@@ -2690,7 +3958,24 @@ Force Sub Diblokir: <b>${totalForceSub}</b>`;
   // Message handler for filters
   bot.on("message", async (msg) => {
     try {
-      if (!msg.from || !msg.chat || msg.chat.type === "private") return;
+      if (!msg.from || !msg.chat) return;
+
+      if (msg.chat.type === "private" && isBotOwner(msg.from.id)) {
+        const waiting = ownerWaitingState.get(msg.from.id);
+        if (waiting) {
+          if (msg.photo || msg.video || msg.animation) {
+            await handleOwnerMediaInput(msg);
+            return;
+          }
+          if (msg.text) {
+            await handleOwnerTextInput(msg, waiting);
+            return;
+          }
+        }
+        return;
+      }
+
+      if (msg.chat.type === "private") return;
       if (msg.text?.startsWith("/")) return;
 
       const chatId = msg.chat.id.toString();

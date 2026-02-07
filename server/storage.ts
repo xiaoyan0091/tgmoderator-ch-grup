@@ -5,7 +5,7 @@ import {
   type Warning, type InsertWarning,
   type BotStats, type InsertBotStats,
   type ActivityLog, type InsertActivityLog,
-  users, groups, groupSettings, warnings, botStats, activityLogs,
+  users, groups, groupSettings, warnings, botStats, activityLogs, botOwnerData,
 } from "@shared/schema";
 import { db } from "./db";
 import { eq, desc, sql, and } from "drizzle-orm";
@@ -35,6 +35,9 @@ export interface IStorage {
   getLogs(chatId: string, limit?: number): Promise<ActivityLog[]>;
   getRecentLogs(limit?: number): Promise<ActivityLog[]>;
   addLog(log: InsertActivityLog): Promise<ActivityLog>;
+
+  getOwnerData(): Promise<any>;
+  saveOwnerData(data: any): Promise<void>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -192,6 +195,26 @@ export class DatabaseStorage implements IStorage {
   async addLog(log: InsertActivityLog): Promise<ActivityLog> {
     const [result] = await db.insert(activityLogs).values(log).returning();
     return result;
+  }
+
+  async getOwnerData(): Promise<any> {
+    const [row] = await db.select().from(botOwnerData).limit(1);
+    if (!row) return null;
+    try {
+      return JSON.parse(row.dataJson);
+    } catch {
+      return null;
+    }
+  }
+
+  async saveOwnerData(data: any): Promise<void> {
+    const json = JSON.stringify(data);
+    const [existing] = await db.select().from(botOwnerData).limit(1);
+    if (existing) {
+      await db.update(botOwnerData).set({ dataJson: json, updatedAt: new Date() }).where(eq(botOwnerData.id, existing.id));
+    } else {
+      await db.insert(botOwnerData).values({ dataJson: json });
+    }
   }
 }
 
