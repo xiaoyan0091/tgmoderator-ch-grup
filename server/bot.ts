@@ -580,12 +580,13 @@ function buildSettingsKeyboard(chatId: string, settings: any, prefix = "toggle")
   const back = prefix === "pmtoggle" ? `pm_group_${chatId}` : `menu_main_${chatId}`;
   return [
     [{ text: `Sambutan: ${s(settings.welcomeEnabled)}`, callback_data: `${prefix}_welcomeEnabled_${chatId}` },
-     { text: `Anti-Spam: ${s(settings.antiSpamEnabled)}`, callback_data: `${prefix}_antiSpamEnabled_${chatId}` }],
-    [{ text: `Anti-Link: ${s(settings.antiLinkEnabled)}`, callback_data: `${prefix}_antiLinkEnabled_${chatId}` },
-     { text: `Anti-Flood: ${s(settings.antiFloodEnabled)}`, callback_data: `${prefix}_antiFloodEnabled_${chatId}` }],
-    [{ text: `Filter Kata: ${s(settings.wordFilterEnabled)}`, callback_data: `${prefix}_wordFilterEnabled_${chatId}` },
-     { text: `Mute Baru: ${s(settings.muteNewMembers)}`, callback_data: `${prefix}_muteNewMembers_${chatId}` }],
-    [{ text: `AI Moderator: ${s(settings.aiModeratorEnabled)}`, callback_data: `${prefix}_aiModeratorEnabled_${chatId}` }],
+     { text: `Perpisahan: ${s(settings.goodbyeEnabled)}`, callback_data: `${prefix}_goodbyeEnabled_${chatId}` }],
+    [{ text: `Anti-Spam: ${s(settings.antiSpamEnabled)}`, callback_data: `${prefix}_antiSpamEnabled_${chatId}` },
+     { text: `Anti-Link: ${s(settings.antiLinkEnabled)}`, callback_data: `${prefix}_antiLinkEnabled_${chatId}` }],
+    [{ text: `Anti-Flood: ${s(settings.antiFloodEnabled)}`, callback_data: `${prefix}_antiFloodEnabled_${chatId}` },
+     { text: `Filter Kata: ${s(settings.wordFilterEnabled)}`, callback_data: `${prefix}_wordFilterEnabled_${chatId}` }],
+    [{ text: `Mute Baru: ${s(settings.muteNewMembers)}`, callback_data: `${prefix}_muteNewMembers_${chatId}` },
+     { text: `AI Moderator: ${s(settings.aiModeratorEnabled)}`, callback_data: `${prefix}_aiModeratorEnabled_${chatId}` }],
     [{ text: "Kembali", callback_data: back }],
   ];
 }
@@ -1600,25 +1601,66 @@ export async function startBot() {
         }
 
         if (settings?.welcomeEnabled) {
-          const welcomeMsg = (settings.welcomeMessage || "Selamat datang {user} di {group}! Silakan patuhi aturan grup.")
-            .replace(/\{user\}/g, getUserMention(member))
-            .replace(/\{group\}/g, escapeHtml(msg.chat.title || "grup"));
+          const rawWelcome = settings.welcomeMessage || "Selamat datang {mention} di {chatname}! Silakan patuhi aturan grup.";
+          const filled = applyFillings(rawWelcome, member as any, msg.chat.title || "grup");
+          const htmlText = parseMarkdownToHtml(filled.text);
+          const { cleanText, buttons } = extractButtonUrls(htmlText);
 
-          const kb: TelegramBot.InlineKeyboardButton[][] = [];
+          const kb: TelegramBot.InlineKeyboardButton[][] = [...buttons];
           if (settings.forceJoinEnabled && settings.forceJoinChannels?.length) {
             settings.forceJoinChannels.forEach((ch: string) => {
               kb.push([{ text: `Gabung @${ch}`, url: `https://t.me/${ch}` }]);
             });
           }
 
-          await bot!.sendMessage(msg.chat.id, welcomeMsg, {
+          const sendOpts: TelegramBot.SendMessageOptions = {
             parse_mode: "HTML",
             reply_markup: kb.length > 0 ? { inline_keyboard: kb } : undefined,
-          });
+            disable_notification: filled.nonotif || undefined,
+            disable_web_page_preview: !filled.preview || undefined,
+          };
+          if (filled.protect) {
+            (sendOpts as any).protect_content = true;
+          }
+
+          await bot!.sendMessage(msg.chat.id, cleanText, sendOpts);
         }
       }
     } catch (err) {
       console.error("Error handling new members:", err);
+    }
+  });
+
+  bot.on("left_chat_member", async (msg) => {
+    try {
+      if (!msg.chat || msg.chat.type === "private" || !msg.left_chat_member) return;
+      const member = msg.left_chat_member;
+      if (member.is_bot) return;
+
+      const chatId = msg.chat.id.toString();
+      await ensureGroupAndSettings(chatId, msg.chat.title || "Grup Tidak Dikenal");
+      const settings = await storage.getSettings(chatId);
+
+      if (settings?.goodbyeEnabled) {
+        const rawGoodbye = settings.goodbyeMessage || "{first} telah meninggalkan grup. Sampai jumpa!";
+        const filled = applyFillings(rawGoodbye, member as any, msg.chat.title || "grup");
+        const htmlText = parseMarkdownToHtml(filled.text);
+        const { cleanText, buttons } = extractButtonUrls(htmlText);
+
+        const sendOpts: TelegramBot.SendMessageOptions = {
+          parse_mode: "HTML",
+          reply_markup: buttons.length > 0 ? { inline_keyboard: buttons } : undefined,
+          disable_notification: filled.nonotif || undefined,
+          disable_web_page_preview: !filled.preview || undefined,
+        };
+        if (filled.protect) {
+          (sendOpts as any).protect_content = true;
+        }
+
+        await bot!.sendMessage(msg.chat.id, cleanText, sendOpts);
+      }
+    } catch (err) {
+      console.error("Error handling left member:", err);
     }
   });
 
@@ -1902,6 +1944,178 @@ Wajib Sub Diblokir: <b>${stats.forceJoinBlocked}</b>`;
       );
     } catch (err) {
       console.error("Error handling /setwelcome:", err);
+    }
+  });
+
+  // /setgoodbye - Atur pesan perpisahan
+  bot.onText(/\/setgoodbye ([\s\S]+)/, async (msg, match) => {
+    try {
+      if (!msg.from || msg.chat.type === "private") return;
+      if (!(await isAdmin(msg.chat.id, msg.from.id)) && !isBotOwner(msg.from.id)) {
+        await bot!.sendMessage(msg.chat.id, "Hanya admin yang bisa menggunakan perintah ini.");
+        return;
+      }
+
+      const chatId = msg.chat.id.toString();
+      await ensureGroupAndSettings(chatId, msg.chat.title || "Grup Tidak Dikenal");
+
+      const newMessage = match![1];
+      await storage.updateSettings(chatId, { goodbyeMessage: newMessage, goodbyeEnabled: true });
+
+      await bot!.sendMessage(
+        msg.chat.id,
+        `Pesan perpisahan berhasil diperbarui:\n\n<i>${escapeHtml(newMessage)}</i>\n\nGunakan /format untuk melihat format yang didukung.`,
+        { parse_mode: "HTML" }
+      );
+    } catch (err) {
+      console.error("Error handling /setgoodbye:", err);
+    }
+  });
+
+  // /welcome on/off - Toggle welcome message
+  bot.onText(/\/welcome(?:\s|$)(on|off|yes|no)?$/i, async (msg, match) => {
+    try {
+      if (!msg.from || msg.chat.type === "private") return;
+      if (!(await isAdmin(msg.chat.id, msg.from.id)) && !isBotOwner(msg.from.id)) {
+        await bot!.sendMessage(msg.chat.id, "Hanya admin yang bisa menggunakan perintah ini.");
+        return;
+      }
+
+      const chatId = msg.chat.id.toString();
+      await ensureGroupAndSettings(chatId, msg.chat.title || "Grup Tidak Dikenal");
+      const settings = await storage.getSettings(chatId);
+
+      const arg = match?.[1]?.toLowerCase();
+      if (!arg) {
+        const status = settings?.welcomeEnabled ? "AKTIF" : "NONAKTIF";
+        await bot!.sendMessage(
+          msg.chat.id,
+          `Pesan sambutan saat ini: <b>${status}</b>\n\nGunakan:\n/welcome on - Aktifkan\n/welcome off - Nonaktifkan`,
+          { parse_mode: "HTML" }
+        );
+        return;
+      }
+
+      const enabled = arg === "on" || arg === "yes";
+      await storage.updateSettings(chatId, { welcomeEnabled: enabled });
+
+      await bot!.sendMessage(
+        msg.chat.id,
+        `Pesan sambutan berhasil <b>${enabled ? "diaktifkan" : "dinonaktifkan"}</b>.`,
+        { parse_mode: "HTML" }
+      );
+    } catch (err) {
+      console.error("Error handling /welcome toggle:", err);
+    }
+  });
+
+  // /goodbye on/off - Toggle goodbye message
+  bot.onText(/\/goodbye(?:\s|$)(on|off|yes|no)?$/i, async (msg, match) => {
+    try {
+      if (!msg.from || msg.chat.type === "private") return;
+      if (!(await isAdmin(msg.chat.id, msg.from.id)) && !isBotOwner(msg.from.id)) {
+        await bot!.sendMessage(msg.chat.id, "Hanya admin yang bisa menggunakan perintah ini.");
+        return;
+      }
+
+      const chatId = msg.chat.id.toString();
+      await ensureGroupAndSettings(chatId, msg.chat.title || "Grup Tidak Dikenal");
+      const settings = await storage.getSettings(chatId);
+
+      const arg = match?.[1]?.toLowerCase();
+      if (!arg) {
+        const status = settings?.goodbyeEnabled ? "AKTIF" : "NONAKTIF";
+        await bot!.sendMessage(
+          msg.chat.id,
+          `Pesan perpisahan saat ini: <b>${status}</b>\n\nGunakan:\n/goodbye on - Aktifkan\n/goodbye off - Nonaktifkan`,
+          { parse_mode: "HTML" }
+        );
+        return;
+      }
+
+      const enabled = arg === "on" || arg === "yes";
+      await storage.updateSettings(chatId, { goodbyeEnabled: enabled });
+
+      await bot!.sendMessage(
+        msg.chat.id,
+        `Pesan perpisahan berhasil <b>${enabled ? "diaktifkan" : "dinonaktifkan"}</b>.`,
+        { parse_mode: "HTML" }
+      );
+    } catch (err) {
+      console.error("Error handling /goodbye toggle:", err);
+    }
+  });
+
+  // /format - Dokumentasi format markdown, fillings, dan button
+  bot.onText(/\/format/, async (msg) => {
+    try {
+      if (!msg.from) return;
+
+      const formatText =
+`<b>Markdown Formatting</b>
+
+Kamu bisa memformat pesan menggunakan bold, italic, underline, dan banyak lagi. Silakan coba!
+
+<b>Markdown yang didukung:</b>
+
+- <code>\`code words\`</code>: Backticks digunakan untuk font monospace. Tampil: <code>code words</code>.
+
+- <code>_italic words_</code>: Underscore digunakan untuk font italic. Tampil: <i>italic words</i>.
+
+- <code>*bold words*</code>: Asterisks digunakan untuk font bold. Tampil: <b>bold words</b>.
+
+- <code>~strikethrough~</code>: Tilde digunakan untuk strikethrough. Tampil: <s>strikethrough</s>.
+
+- <code>||spoiler||</code>: Double vertical bar digunakan untuk spoiler. Tampil: <span class="tg-spoiler">Spoiler</span>.
+
+- <code>\`\`\`pre\`\`\`</code>: Untuk membuat formatter mengabaikan karakter format lain di dalam teks. Tampil: <pre>**bold** | *bold*</pre>
+
+- <code>__underline__</code>: Double underscore digunakan untuk underline. Tampil: <u>underline</u>. CATATAN: Beberapa klien mencoba menginterpretasinya sebagai italic. Dalam hal ini, coba gunakan formatting bawaan aplikasi.
+
+- <code>[hyperlink](example.com)</code>: Format untuk hyperlink. Tampil: <a href="https://example.com">hyperlink</a>.
+
+- <code>[My Button](buttonurl://example.com)</code>: Format untuk membuat tombol. Contoh ini akan membuat tombol bernama "My Button" yang membuka example.com saat diklik.
+
+Jika kamu ingin mengirim tombol di baris yang sama, gunakan format <code>:same</code>.
+
+<b>Contoh:</b>
+<code>[button 1](buttonurl://example.com)</code>
+<code>[button 2](buttonurl://example.com:same)</code>
+<code>[button 3](buttonurl://example.com)</code>
+
+Ini akan menampilkan button 1 dan 2 di baris yang sama, dengan 3 di bawahnya.
+
+<b>Fillings</b>
+
+Kamu juga bisa menyesuaikan isi pesan dengan data kontekstual. Misalnya, menyebutkan pengguna berdasarkan nama di pesan sambutan, atau menyebutkan mereka di filter!
+
+<b>Fillings yang didukung:</b>
+- <code>{first}</code>: Nama depan pengguna.
+- <code>{last}</code>: Nama belakang pengguna.
+- <code>{fullname}</code>: Nama lengkap pengguna.
+- <code>{username}</code>: Username pengguna. Jika tidak punya, mention pengguna.
+- <code>{mention}</code>: Mention pengguna dengan nama depannya.
+- <code>{id}</code>: ID pengguna.
+- <code>{chatname}</code>: Nama chat/grup.
+- <code>{namegroup}</code>: Nama grup.
+- <code>{rules}</code>: Menambahkan tombol Rules ke pesan.
+- <code>{protect}</code>: Melindungi konten dari dibagikan.
+- <code>{preview}</code>: Mengaktifkan preview di pesan.
+- <code>{nonotif}</code>: Menonaktifkan notifikasi untuk pesan.
+
+<b>Berlaku untuk perintah:</b>
+- /setwelcome - Atur pesan sambutan
+- /welcome on/off - Aktifkan/nonaktifkan sambutan
+- /setgoodbye - Atur pesan perpisahan
+- /goodbye on/off - Aktifkan/nonaktifkan perpisahan
+- /broadcast - Kirim pesan ke semua grup`;
+
+      await bot!.sendMessage(msg.chat.id, formatText, {
+        parse_mode: "HTML",
+        disable_web_page_preview: true,
+      });
+    } catch (err) {
+      console.error("Error handling /format:", err);
     }
   });
 
@@ -2776,8 +2990,11 @@ Wajib Sub Diblokir: <b>${stats.forceJoinBlocked}</b>`;
     result = result.replace(/\{fullname\}/gi, escapeHtml(fullName));
     result = result.replace(/\{username\}/gi, username);
     result = result.replace(/\{mention\}/gi, mention);
+    result = result.replace(/\{user\}/gi, mention);
     result = result.replace(/\{id\}/gi, String(user.id));
     result = result.replace(/\{chatname\}/gi, escapeHtml(chatName || "Private Chat"));
+    result = result.replace(/\{namegroup\}/gi, escapeHtml(chatName || "Private Chat"));
+    result = result.replace(/\{group\}/gi, escapeHtml(chatName || "Private Chat"));
 
     if (/\{rules\}/gi.test(result)) {
       result = result.replace(/\{rules\}/gi, "");
@@ -3245,11 +3462,15 @@ Wajib Sub Diblokir: <b>${stats.forceJoinBlocked}</b>`;
           `<b>/settings</b> - Lihat pengaturan saat ini\n` +
           `<b>/stats</b> - Lihat statistik grup\n` +
           `<b>/setwelcome</b> [pesan] - Atur sambutan\n` +
+          `<b>/welcome</b> on/off - Toggle sambutan\n` +
+          `<b>/setgoodbye</b> [pesan] - Atur perpisahan\n` +
+          `<b>/goodbye</b> on/off - Toggle perpisahan\n` +
           `<b>/setforcesub</b> [username] - Tambah channel wajib\n` +
           `<b>/delforcesub</b> [username] - Hapus channel wajib\n` +
           `<b>/addword</b> [kata] - Tambah kata terlarang\n` +
-          `<b>/delword</b> [kata] - Hapus kata terlarang\n\n` +
-          `<i>Gunakan {user} untuk nama pengguna, {group} untuk nama grup di pesan sambutan.</i>`,
+          `<b>/delword</b> [kata] - Hapus kata terlarang\n` +
+          `<b>/format</b> - Panduan format teks\n\n` +
+          `<i>Gunakan /format untuk melihat format yang didukung.</i>`,
           { chat_id: chatId, message_id: msgId, parse_mode: "HTML", reply_markup: { inline_keyboard: [
             [{ text: "\uD83D\uDCD6 Umum", callback_data: `help_umum` }, { text: "\uD83D\uDEE1\uFE0F Moderasi", callback_data: `help_moderasi` }],
             [{ text: "\u2B05\uFE0F Kembali", callback_data: `help_main` }],
@@ -3429,7 +3650,8 @@ Wajib Sub Diblokir: <b>${stats.forceJoinBlocked}</b>`;
         const groupId = parts.pop()!;
         const field = parts.join("_");
         const fieldMap: Record<string, string> = {
-          welcomeEnabled: "welcomeEnabled", antiSpamEnabled: "antiSpamEnabled",
+          welcomeEnabled: "welcomeEnabled", goodbyeEnabled: "goodbyeEnabled",
+          antiSpamEnabled: "antiSpamEnabled",
           antiLinkEnabled: "antiLinkEnabled", wordFilterEnabled: "wordFilterEnabled",
           antiFloodEnabled: "antiFloodEnabled", muteNewMembers: "muteNewMembers",
           forceJoinEnabled: "forceJoinEnabled", aiModeratorEnabled: "aiModeratorEnabled",
@@ -3444,7 +3666,8 @@ Wajib Sub Diblokir: <b>${stats.forceJoinBlocked}</b>`;
         if (!updated) return;
 
         const labelMap: Record<string, string> = {
-          welcomeEnabled: "Sambutan", antiSpamEnabled: "Anti-Spam", antiLinkEnabled: "Anti-Link",
+          welcomeEnabled: "Sambutan", goodbyeEnabled: "Perpisahan",
+          antiSpamEnabled: "Anti-Spam", antiLinkEnabled: "Anti-Link",
           wordFilterEnabled: "Filter Kata", antiFloodEnabled: "Anti-Flood", muteNewMembers: "Mute Baru",
           forceJoinEnabled: "Wajib Sub", aiModeratorEnabled: "AI Moderator",
         };
@@ -3616,7 +3839,8 @@ Wajib Sub Diblokir: <b>${stats.forceJoinBlocked}</b>`;
         const groupId = parts.pop()!;
         const field = parts.join("_");
         const fieldMap: Record<string, string> = {
-          welcomeEnabled: "welcomeEnabled", antiSpamEnabled: "antiSpamEnabled",
+          welcomeEnabled: "welcomeEnabled", goodbyeEnabled: "goodbyeEnabled",
+          antiSpamEnabled: "antiSpamEnabled",
           antiLinkEnabled: "antiLinkEnabled", wordFilterEnabled: "wordFilterEnabled",
           antiFloodEnabled: "antiFloodEnabled", muteNewMembers: "muteNewMembers",
           forceJoinEnabled: "forceJoinEnabled", aiModeratorEnabled: "aiModeratorEnabled",
@@ -3633,7 +3857,8 @@ Wajib Sub Diblokir: <b>${stats.forceJoinBlocked}</b>`;
         if (!updated) return;
 
         const labelMap: Record<string, string> = {
-          welcomeEnabled: "Sambutan", antiSpamEnabled: "Anti-Spam", antiLinkEnabled: "Anti-Link",
+          welcomeEnabled: "Sambutan", goodbyeEnabled: "Perpisahan",
+          antiSpamEnabled: "Anti-Spam", antiLinkEnabled: "Anti-Link",
           wordFilterEnabled: "Filter Kata", antiFloodEnabled: "Anti-Flood", muteNewMembers: "Mute Baru",
           forceJoinEnabled: "Wajib Sub", aiModeratorEnabled: "AI Moderator",
         };

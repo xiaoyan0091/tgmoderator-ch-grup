@@ -100,6 +100,10 @@ npm run dev
 
 ### Pengaturan Fitur (Admin)
 - /setwelcome [pesan] - Atur pesan sambutan
+- /welcome on/off - Aktifkan/nonaktifkan sambutan
+- /setgoodbye [pesan] - Atur pesan perpisahan
+- /goodbye on/off - Aktifkan/nonaktifkan perpisahan
+- /format - Panduan format markdown, fillings, dan button
 - /setforcesub [username] - Tambah channel force sub
 - /delforcesub [username] - Hapus channel force sub
 - /addword [kata] - Tambah kata terlarang
