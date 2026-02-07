@@ -108,6 +108,32 @@ npm run dev
 ### Pengaturan via PM
 - /setgroup - Pengaturan grup lengkap via PM dengan tombol inline (pilih grup, toggle fitur, atur peringatan, filter, wajib sub, statistik)
 
+### Jadwal Donghua (Group Commands)
+- /jadwal - Tampilkan jadwal hari ini (20-menit cooldown anti-spam)
+- /rules - Tampilkan rules bot (20-menit cooldown, auto-delete 10 detik)
+
 ### Pemilik Bot
-- /owner atau /menuowner - Panel pemilik bot dengan status lengkap dan tombol inline
+- /owner atau /menuowner - Panel pemilik bot dengan status lengkap dan tombol inline (termasuk jadwal donghua management)
 - /broadcast [pesan] - Kirim pesan ke semua grup
+
+## Jadwal Donghua System (Bot Owner Only)
+Integrated schedule management system accessible from /owner panel:
+- **Data Structure**: In-memory `jadwalData` object backed by PostgreSQL (`botOwnerData` table)
+- **Schedule Management**: Add/delete harian (daily per day) and upcoming schedules with pagination
+- **Channel Management**: Add/delete channels for auto-posting with test messages
+- **Auto-Post**: Daily automated posting at configurable WIB time with 1-minute rotating channel delays
+- **Telegraph Integration**: Create/update Telegraph pages for schedule viewing
+- **Rules Management**: Set/preview HTML rules for groups
+- **Media Management**: Set photo/video/GIF per day (via file_id or URL) for schedule posts
+- **Owner State Tracking**: `ownerWaitingState` Map tracks PM input states for the owner
+- **All callback_data prefixed with `jd_`** to avoid conflicts with moderation callbacks
+- **All messages in Indonesian (Bahasa Indonesia)** matching original Python bot exactly
+
+### Jadwal Callback Handlers (jd_* prefix)
+- jd_tambah, jd_hapus, jd_lihat, jd_preview, jd_send_now
+- jd_manage_channels, jd_add_channel, jd_dc_N (delete channel)
+- jd_set_time, jd_toggle_auto, jd_setup_telegraph, jd_create_telegraph, jd_update_telegraph
+- jd_set_rules, jd_preview_rules
+- jd_set_media, jd_mu_HARI (upload media), jd_md_HARI (delete media)
+- jd_dh_HARI_HASH (delete harian), jd_du_INDEX (delete upcoming), jd_dp_N (pagination)
+- jd_back (back to owner panel)
