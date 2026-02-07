@@ -1,7 +1,7 @@
 # TG Moderator Bot
 
 ## Overview
-A Telegram Group Moderator Bot with a web dashboard. The bot provides comprehensive group moderation features including force join, anti-spam, word filtering, and more. The web dashboard allows managing bot settings for each group.
+A Telegram Group Moderator Bot with a web dashboard. The bot provides comprehensive group moderation features including force join, anti-spam, word filtering, and more. The web dashboard allows managing bot settings for each group. All bot messages are in Indonesian (Bahasa Indonesia).
 
 ## Architecture
 - **Frontend**: React + Vite + TailwindCSS + Shadcn UI
@@ -10,7 +10,7 @@ A Telegram Group Moderator Bot with a web dashboard. The bot provides comprehens
 - **Bot**: node-telegram-bot-api (polling mode)
 
 ## Key Features
-- Force Join - require users to join channels before chatting
+- Force Join/Sub - require users to join channels before chatting
 - Welcome Messages - customizable greetings for new members
 - Anti-Spam - message rate limiting
 - Anti-Link - block URL messages
@@ -18,6 +18,8 @@ A Telegram Group Moderator Bot with a web dashboard. The bot provides comprehens
 - Anti-Flood - prevent message flooding
 - Warning System - warn/mute/ban/kick with configurable limits
 - Mute New Members - temporarily restrict new members
+- Inline Keyboard Button Menus - full admin menu with interactive buttons
+- Bot Owner Panel - broadcast, global stats, group management
 - Web Dashboard - manage all settings via browser
 
 ## Project Structure
@@ -36,7 +38,7 @@ client/src/
 server/
   index.ts - Express server entry point
   routes.ts - API routes + bot startup
-  bot.ts - Telegram bot with all moderation features
+  bot.ts - Telegram bot with all moderation features (Indonesian language)
   storage.ts - Database CRUD operations
   db.ts - PostgreSQL connection + schema push
 
@@ -64,14 +66,44 @@ shared/
 npm run dev
 ```
 
-## Bot Commands
-- /start - Bot introduction
-- /help - List commands
-- /warn - Warn a user (reply)
-- /unwarn - Clear warnings (reply)
-- /warnings - Check warnings (reply)
-- /ban, /unban - Ban/unban (reply)
-- /kick - Kick user (reply)
-- /mute, /unmute - Mute/unmute (reply)
-- /settings - View group settings (admin)
-- /stats - View group stats (admin)
+## Bot Commands (Indonesian / Bahasa Indonesia)
+
+### Umum
+- /start - Perkenalan bot
+- /help - Daftar semua perintah
+- /menu - Menu pengaturan grup dengan tombol inline (Admin)
+- /rules - Lihat aturan grup
+
+### Moderasi (Khusus Admin, balas pesan pengguna)
+- /warn [alasan] - Beri peringatan
+- /unwarn - Hapus semua peringatan
+- /warnings - Cek peringatan
+- /ban - Banned pengguna
+- /unban - Buka banned
+- /kick - Tendang pengguna
+- /mute [menit] - Bisukan pengguna
+- /unmute - Buka bisukan
+- /del - Hapus pesan
+- /purge - Hapus banyak pesan (balas pesan pertama)
+- /pin - Sematkan pesan
+- /unpin - Lepas sematan
+
+### Pengaturan Grup (Admin)
+- /setTitle [judul] - Ubah judul grup
+- /promote - Jadikan admin (pemilik grup saja)
+- /demote - Cabut admin (pemilik grup saja)
+- /lock - Kunci chat
+- /unlock - Buka kunci chat
+- /slow [detik] - Mode lambat
+
+### Pengaturan Fitur (Admin)
+- /setwelcome [pesan] - Atur pesan sambutan
+- /setforcejoin [username] - Tambah channel force join
+- /delforcejoin [username] - Hapus channel force join
+- /addword [kata] - Tambah kata terlarang
+- /delword [kata] - Hapus kata terlarang
+
+### Pemilik Bot
+- /setowner - Tetapkan pemilik bot (sekali pakai)
+- /owner - Panel pemilik bot dengan tombol inline
+- /broadcast [pesan] - Kirim pesan ke semua grup

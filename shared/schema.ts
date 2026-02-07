@@ -34,7 +34,7 @@ export const groupSettings = pgTable("group_settings", {
   id: serial("id").primaryKey(),
   chatId: text("chat_id").notNull().unique(),
   welcomeEnabled: boolean("welcome_enabled").default(true),
-  welcomeMessage: text("welcome_message").default("Welcome {user} to {group}! Please follow the rules."),
+  welcomeMessage: text("welcome_message").default("Selamat datang {user} di {group}! Silakan patuhi aturan grup."),
   forceJoinEnabled: boolean("force_join_enabled").default(false),
   forceJoinChannels: text("force_join_channels").array().default(sql`'{}'::text[]`),
   antiSpamEnabled: boolean("anti_spam_enabled").default(true),
