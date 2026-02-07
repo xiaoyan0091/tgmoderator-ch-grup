@@ -3,10 +3,12 @@ import OpenAI from "openai";
 import { storage } from "./storage";
 import { pushSchema } from "./db";
 
-const openai = new OpenAI({
-  apiKey: process.env.AI_INTEGRATIONS_OPENAI_API_KEY,
-  baseURL: process.env.AI_INTEGRATIONS_OPENAI_BASE_URL,
-});
+const openai = (process.env.AI_INTEGRATIONS_OPENAI_API_KEY || process.env.OPENAI_API_KEY)
+  ? new OpenAI({
+      apiKey: process.env.AI_INTEGRATIONS_OPENAI_API_KEY || process.env.OPENAI_API_KEY,
+      baseURL: process.env.AI_INTEGRATIONS_OPENAI_BASE_URL || undefined,
+    })
+  : null;
 
 const spamTracker = new Map<string, number[]>();
 const floodTracker = new Map<string, number[]>();
@@ -435,6 +437,8 @@ async function checkAiModerator(msg: TelegramBot.Message): Promise<boolean> {
   if (await isAdmin(msg.chat.id, msg.from.id)) return true;
 
   if (msg.text.length < 5) return true;
+
+  if (!openai) return true;
 
   try {
     const response = await openai.chat.completions.create({
