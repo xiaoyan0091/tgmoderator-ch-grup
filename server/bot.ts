@@ -3170,14 +3170,9 @@ Kamu juga bisa menyesuaikan isi pesan dengan data kontekstual. Misalnya, menyebu
     return result;
   }
 
-  // /broadcast - Kirim pesan ke semua grup
+  // /broadcast - Kirim pesan ke semua pengguna yang pernah /start bot
   // Support: direct text, reply text, reply media dengan caption
-  // Support: Telegram native formatting (entities), custom markdown, button URLs
-  // Cara pakai:
-  //   1. /broadcast teks pesan
-  //   2. Reply pesan teks + /broadcast (ambil teks & format dari reply)
-  //   3. Reply media + /broadcast (forward media + caption asli)
-  //   4. Reply media + /broadcast caption baru (media + caption baru)
+  // Support: Telegram native formatting (entities), custom markdown, fillings, button URLs
   bot.onText(/\/broadcast(?:\s|$|@)([\s\S]*)/, async (msg, match) => {
     try {
       if (!msg.from) return;
@@ -3250,28 +3245,17 @@ Kamu juga bisa menyesuaikan isi pesan dengan data kontekstual. Misalnya, menyebu
         return;
       }
 
-      const allGroups = await storage.getGroups();
-      const activeGroups = allGroups.filter(g => g.isActive);
+      const allUsers = await storage.getAllBotUsers();
 
-      if (activeGroups.length === 0) {
-        await bot!.sendMessage(msg.chat.id, "Belum ada grup yang terdaftar.", { parse_mode: "HTML" });
+      if (allUsers.length === 0) {
+        await bot!.sendMessage(msg.chat.id, "Belum ada pengguna yang memulai bot.", { parse_mode: "HTML" });
         return;
-      }
-
-      const { cleanText, buttons } = extractButtonUrls(broadcastHtml);
-
-      const baseOptions: any = {
-        parse_mode: "HTML",
-      };
-
-      if (buttons.length > 0) {
-        baseOptions.reply_markup = { inline_keyboard: buttons };
       }
 
       const statusMsg = await bot!.sendMessage(
         msg.chat.id,
         `<b>Broadcast dimulai...</b>\n\n` +
-        `Target: <b>${activeGroups.length}</b> grup\n` +
+        `Target: <b>${allUsers.length}</b> pengguna\n` +
         (mediaType ? `Media: <b>${mediaType}</b>\n` : "") +
         `Status: Mengirim...`,
         { parse_mode: "HTML" }
@@ -3279,60 +3263,98 @@ Kamu juga bisa menyesuaikan isi pesan dengan data kontekstual. Misalnya, menyebu
 
       let sent = 0;
       let failed = 0;
+      let blocked = 0;
 
-      for (const group of activeGroups) {
+      for (const user of allUsers) {
         try {
-          const chatId = group.chatId;
+          const userId = user.odId;
+          const userObj = {
+            id: parseInt(userId),
+            first_name: user.firstName || "",
+            last_name: user.lastName || "",
+            username: user.username || "",
+          };
+
+          const { cleanText, buttons } = extractButtonUrls(broadcastHtml);
+
+          let finalText = cleanText;
+          let protect = false;
+          let preview = false;
+          let nonotif = false;
+
+          if (finalText) {
+            const fillings = applyFillings(finalText, userObj);
+            finalText = fillings.text;
+            protect = fillings.protect;
+            preview = fillings.preview;
+            nonotif = fillings.nonotif;
+          }
+
+          const sendOpts: any = {
+            parse_mode: "HTML",
+            disable_notification: nonotif,
+          };
+
+          if (protect) {
+            sendOpts.protect_content = true;
+          }
+
+          if (buttons.length > 0) {
+            sendOpts.reply_markup = { inline_keyboard: buttons };
+          }
 
           if (mediaType && mediaFileId) {
-            const captionOpts: any = { ...baseOptions };
-            if (cleanText && mediaType !== "sticker" && mediaType !== "video_note") {
-              captionOpts.caption = cleanText;
+            const captionOpts: any = { ...sendOpts };
+            if (finalText && mediaType !== "sticker" && mediaType !== "video_note") {
+              captionOpts.caption = finalText;
             }
 
             switch (mediaType) {
               case "photo":
-                await bot!.sendPhoto(chatId, mediaFileId, captionOpts);
+                await bot!.sendPhoto(userId, mediaFileId, captionOpts);
                 break;
               case "video":
-                await bot!.sendVideo(chatId, mediaFileId, captionOpts);
+                await bot!.sendVideo(userId, mediaFileId, captionOpts);
                 break;
               case "animation":
-                await bot!.sendAnimation(chatId, mediaFileId, captionOpts);
+                await bot!.sendAnimation(userId, mediaFileId, captionOpts);
                 break;
               case "document":
-                await bot!.sendDocument(chatId, mediaFileId, captionOpts);
+                await bot!.sendDocument(userId, mediaFileId, captionOpts);
                 break;
               case "audio":
-                await bot!.sendAudio(chatId, mediaFileId, captionOpts);
+                await bot!.sendAudio(userId, mediaFileId, captionOpts);
                 break;
               case "sticker":
-                await bot!.sendSticker(chatId, mediaFileId);
+                await bot!.sendSticker(userId, mediaFileId);
                 break;
               case "voice":
-                await bot!.sendVoice(chatId, mediaFileId, captionOpts);
+                await bot!.sendVoice(userId, mediaFileId, captionOpts);
                 break;
               case "video_note":
-                await bot!.sendVideoNote(chatId, mediaFileId as any);
+                await bot!.sendVideoNote(userId, mediaFileId as any);
                 break;
             }
-          } else if (cleanText) {
-            await bot!.sendMessage(chatId, cleanText, baseOptions);
+          } else if (finalText) {
+            await bot!.sendMessage(userId, finalText, { ...sendOpts, disable_web_page_preview: !preview });
           }
           sent++;
         } catch (e: any) {
-          console.error(`Broadcast gagal ke grup ${group.chatId}:`, e.message || e);
+          const errStr = String(e).toLowerCase();
+          if (errStr.includes("blocked") || errStr.includes("deactivated") || errStr.includes("not found") || errStr.includes("forbidden")) {
+            blocked++;
+          }
           failed++;
         }
 
-        if ((sent + failed) % 10 === 0 && (sent + failed) < activeGroups.length) {
+        if ((sent + failed) % 25 === 0 && (sent + failed) < allUsers.length) {
           try {
             await bot!.editMessageText(
               `<b>Broadcast sedang berjalan...</b>\n\n` +
-              `Target: <b>${activeGroups.length}</b> grup\n` +
+              `Target: <b>${allUsers.length}</b> pengguna\n` +
               `Terkirim: <b>${sent}</b>\n` +
               `Gagal: <b>${failed}</b>\n` +
-              `Progress: <b>${sent + failed}/${activeGroups.length}</b>`,
+              `Progress: <b>${sent + failed}/${allUsers.length}</b>`,
               { chat_id: msg.chat.id, message_id: statusMsg.message_id, parse_mode: "HTML" }
             );
           } catch {}
@@ -3342,10 +3364,11 @@ Kamu juga bisa menyesuaikan isi pesan dengan data kontekstual. Misalnya, menyebu
       try {
         await bot!.editMessageText(
           `<b>Broadcast Selesai!</b>\n\n` +
-          `Total Grup: <b>${activeGroups.length}</b>\n` +
+          `Total Pengguna: <b>${allUsers.length}</b>\n` +
           (mediaType ? `Media: <b>${mediaType}</b>\n` : "") +
           `Berhasil Terkirim: <b>${sent}</b>\n` +
-          `Gagal: <b>${failed}</b>`,
+          `Gagal: <b>${failed}</b>\n` +
+          `Blocked/Deaktif: <b>${blocked}</b>`,
           { chat_id: msg.chat.id, message_id: statusMsg.message_id, parse_mode: "HTML" }
         );
       } catch {}
@@ -4237,28 +4260,24 @@ Force Sub Diblokir: <b>${totalForceSub}</b>`;
           return;
         }
 
-        const allGroups = await storage.getGroups();
-        const activeCount = allGroups.filter(g => g.isActive).length;
+        const userCount = await storage.getBotUserCount();
 
         await bot!.editMessageText(
           `<b>Broadcast Pesan</b>\n\n` +
-          `Target: <b>${activeCount}</b> grup aktif\n\n` +
+          `Target: <b>${userCount}</b> pengguna yang pernah /start bot\n\n` +
           `<b>Cara Broadcast:</b>\n` +
           `1. <code>/broadcast pesan anda</code>\n` +
           `2. Reply pesan teks + <code>/broadcast</code>\n` +
           `3. Reply media + <code>/broadcast</code>\n` +
           `4. Reply media + <code>/broadcast caption baru</code>\n\n` +
           `<b>Contoh:</b>\n` +
-          `<code>/broadcast Halo semua! Ada update baru.</code>\n\n` +
-
-          `<b>Media yang Didukung (via Reply):</b>\n` +
-          `Foto, Video, GIF/Animasi, Dokumen, Audio, Sticker, Voice, Video Note\n\n` +
-
+          `<code>/broadcast Halo {first}! Ada update baru.</code>\n\n` +
           `<b>Format yang Didukung:</b>\n` +
           `- Telegram native formatting (bold, italic, dll)\n` +
           `- Markdown: *bold*, _italic_, ~strikethrough~\n` +
+          `- Fillings: {first}, {username}, {mention}, {id}\n` +
           `- Button URL: [teks](buttonurl://link)\n\n` +
-          `<i>Pesan akan dikirim ke semua grup aktif.</i>`,
+          `<i>Pesan dikirim ke semua pengguna yang pernah /start bot.</i>`,
           {
             chat_id: chatId,
             message_id: msgId,
