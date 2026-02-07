@@ -47,6 +47,8 @@ export const groupSettings = pgTable("group_settings", {
   antiFloodSeconds: integer("anti_flood_seconds").default(60),
   warnLimit: integer("warn_limit").default(3),
   warnAction: text("warn_action").default("mute"),
+  goodbyeEnabled: boolean("goodbye_enabled").default(false),
+  goodbyeMessage: text("goodbye_message").default("{first} telah meninggalkan grup. Sampai jumpa!"),
   muteNewMembers: boolean("mute_new_members").default(false),
   muteNewMembersDuration: integer("mute_new_members_duration").default(300),
   aiModeratorEnabled: boolean("ai_moderator_enabled").default(false),
