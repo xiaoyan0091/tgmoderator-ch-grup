@@ -1309,27 +1309,60 @@ function startAutoPostScheduler() {
   }, 30000);
 }
 
-function buildOwnerMenuKeyboard(): TelegramBot.InlineKeyboardButton[][] {
-  return [
-    [{ text: "Tambah Jadwal", callback_data: "jd_tambah" },
-     { text: "Hapus Jadwal", callback_data: "jd_hapus" }],
-    [{ text: "Lihat Semua", callback_data: "jd_lihat" },
-     { text: "Preview Hari Ini", callback_data: "jd_preview" }],
-    [{ text: "Kelola Channel", callback_data: "jd_manage_channels" },
-     { text: "Set Jam Post", callback_data: "jd_set_time" }],
-    [{ text: "Setup Telegraph", callback_data: "jd_setup_telegraph" },
-     { text: "Toggle Auto Post", callback_data: "jd_toggle_auto" }],
-    [{ text: "Set Rules", callback_data: "jd_set_rules" },
-     { text: "Preview Rules", callback_data: "jd_preview_rules" }],
-    [{ text: "Set Media Jadwal", callback_data: "jd_set_media" }],
-    [{ text: "Daftar Grup", callback_data: "owner_groups" },
-     { text: "Kelola Grup", callback_data: "owner_manage" }],
-    [{ text: "Statistik Global", callback_data: "owner_stats" },
-     { text: "Log Aktivitas", callback_data: "owner_logs" }],
-    [{ text: "Broadcast", callback_data: "owner_broadcast_menu" }],
-    [{ text: "Perbarui Info", callback_data: "owner_refresh" }],
-    [{ text: "Tutup", callback_data: "menu_close" }],
-  ];
+function buildOwnerMenuKeyboard(page: number = 1): TelegramBot.InlineKeyboardButton[][] {
+  const kb: TelegramBot.InlineKeyboardButton[][] = [];
+
+  if (page === 1) {
+    kb.push(
+      [{ text: "\u2500\u2500\u2500 Jadwal Donghua \u2500\u2500\u2500", callback_data: "noop" }],
+      [{ text: "\u2795 Tambah", callback_data: "jd_tambah" },
+       { text: "\u2796 Hapus", callback_data: "jd_hapus" }],
+      [{ text: "\uD83D\uDCCB Lihat Semua", callback_data: "jd_lihat" },
+       { text: "\uD83D\uDC41 Preview", callback_data: "jd_preview" }],
+      [{ text: "\uD83D\uDCE4 Kirim Sekarang", callback_data: "jd_send_now" }],
+      [{ text: "\u2500\u2500\u2500 Channel & Posting \u2500\u2500\u2500", callback_data: "noop" }],
+      [{ text: "\uD83D\uDCFA Kelola Channel", callback_data: "jd_manage_channels" },
+       { text: "\u23F0 Set Jam Post", callback_data: "jd_set_time" }],
+      [{ text: "\uD83D\uDD04 Toggle Auto Post", callback_data: "jd_toggle_auto" }],
+    );
+    kb.push(
+      [{ text: "\u27A1\uFE0F Halaman 2/3", callback_data: "owner_page_2" }],
+      [{ text: "\uD83D\uDD04 Perbarui", callback_data: "owner_refresh" },
+       { text: "\u274C Tutup", callback_data: "menu_close" }],
+    );
+  } else if (page === 2) {
+    kb.push(
+      [{ text: "\u2500\u2500\u2500 Telegraph & Rules \u2500\u2500\u2500", callback_data: "noop" }],
+      [{ text: "\uD83D\uDCF0 Setup Telegraph", callback_data: "jd_setup_telegraph" },
+       { text: "\uD83D\uDCDD Update Telegraph", callback_data: "jd_update_telegraph" }],
+      [{ text: "\uD83D\uDCDC Set Rules", callback_data: "jd_set_rules" },
+       { text: "\uD83D\uDC41 Preview Rules", callback_data: "jd_preview_rules" }],
+      [{ text: "\u2500\u2500\u2500 Media Jadwal \u2500\u2500\u2500", callback_data: "noop" }],
+      [{ text: "\uD83C\uDFA8 Set Media per Hari", callback_data: "jd_set_media" }],
+    );
+    kb.push(
+      [{ text: "\u2B05\uFE0F Halaman 1/3", callback_data: "owner_page_1" },
+       { text: "\u27A1\uFE0F Halaman 3/3", callback_data: "owner_page_3" }],
+      [{ text: "\uD83D\uDD04 Perbarui", callback_data: "owner_refresh" },
+       { text: "\u274C Tutup", callback_data: "menu_close" }],
+    );
+  } else if (page === 3) {
+    kb.push(
+      [{ text: "\u2500\u2500\u2500 Manajemen Bot \u2500\u2500\u2500", callback_data: "noop" }],
+      [{ text: "\uD83D\uDCCB Daftar Grup", callback_data: "owner_groups" },
+       { text: "\u2699\uFE0F Kelola Grup", callback_data: "owner_manage" }],
+      [{ text: "\uD83D\uDCCA Statistik Global", callback_data: "owner_stats" },
+       { text: "\uD83D\uDCDD Log Aktivitas", callback_data: "owner_logs" }],
+      [{ text: "\uD83D\uDCE2 Broadcast", callback_data: "owner_broadcast_menu" }],
+    );
+    kb.push(
+      [{ text: "\u2B05\uFE0F Halaman 2/3", callback_data: "owner_page_2" }],
+      [{ text: "\uD83D\uDD04 Perbarui", callback_data: "owner_refresh" },
+       { text: "\u274C Tutup", callback_data: "menu_close" }],
+    );
+  }
+
+  return kb;
 }
 
 async function buildOwnerPanelText(user: TelegramBot.User): Promise<string> {
@@ -1405,33 +1438,35 @@ function buildStartMenuKeyboard(userId: number, groupId?: string): TelegramBot.I
   const kb: TelegramBot.InlineKeyboardButton[][] = [];
   if (groupId) {
     kb.push(
-      [{ text: "Pengaturan Fitur", callback_data: `pm_settings_${groupId}` }],
-      [{ text: "Wajib Sub", callback_data: `pm_forcejoin_${groupId}` },
-       { text: "Filter Kata", callback_data: `pm_wordfilter_${groupId}` }],
-      [{ text: "Peringatan", callback_data: `pm_warnings_${groupId}` },
-       { text: "Statistik", callback_data: `pm_stats_${groupId}` }],
+      [{ text: "\u2500\u2500\u2500 Pengaturan Grup \u2500\u2500\u2500", callback_data: "noop" }],
+      [{ text: "\u2699\uFE0F Fitur", callback_data: `pm_settings_${groupId}` },
+       { text: "\uD83D\uDD14 Wajib Sub", callback_data: `pm_forcejoin_${groupId}` }],
+      [{ text: "\uD83D\uDEAB Filter Kata", callback_data: `pm_wordfilter_${groupId}` },
+       { text: "\u26A0\uFE0F Peringatan", callback_data: `pm_warnings_${groupId}` }],
+      [{ text: "\uD83D\uDCCA Statistik", callback_data: `pm_stats_${groupId}` }],
     );
   }
   kb.push(
-    [{ text: "Kelola Grup", callback_data: `start_setgroup` }],
-    [{ text: "Bantuan Umum", callback_data: `help_main` }],
-    [{ text: "Perintah Moderasi", callback_data: `help_moderasi` },
-     { text: "Perintah Pengaturan", callback_data: `help_pengaturan` }],
+    [{ text: "\u2500\u2500\u2500 Menu Utama \u2500\u2500\u2500", callback_data: "noop" }],
+    [{ text: "\uD83D\uDCC2 Kelola Grup", callback_data: `start_setgroup` }],
+    [{ text: "\u2753 Bantuan", callback_data: `help_main` }],
+    [{ text: "\uD83D\uDEE1\uFE0F Moderasi", callback_data: `help_moderasi` },
+     { text: "\u2699\uFE0F Pengaturan", callback_data: `help_pengaturan` }],
   );
   if (isBotOwner(userId)) {
-    kb.push([{ text: "Panel Pemilik Bot", callback_data: `start_owner` }]);
+    kb.push([{ text: "\uD83D\uDC51 Panel Pemilik Bot", callback_data: `start_owner` }]);
   }
-  kb.push([{ text: "Tutup", callback_data: `menu_close` }]);
+  kb.push([{ text: "\u274C Tutup", callback_data: `menu_close` }]);
   return kb;
 }
 
 function buildHelpMainKeyboard(): TelegramBot.InlineKeyboardButton[][] {
   return [
-    [{ text: "Perintah Umum", callback_data: `help_umum` }],
-    [{ text: "Perintah Moderasi", callback_data: `help_moderasi` }],
-    [{ text: "Perintah Pengaturan", callback_data: `help_pengaturan` }],
-    [{ text: "Info Pemilik Bot", callback_data: `help_pemilik` }],
-    [{ text: "Kembali", callback_data: `start_back` }],
+    [{ text: "\uD83D\uDCD6 Perintah Umum", callback_data: `help_umum` }],
+    [{ text: "\uD83D\uDEE1\uFE0F Perintah Moderasi", callback_data: `help_moderasi` }],
+    [{ text: "\u2699\uFE0F Perintah Pengaturan", callback_data: `help_pengaturan` }],
+    [{ text: "\uD83D\uDC51 Info Pemilik Bot", callback_data: `help_pemilik` }],
+    [{ text: "\u2B05\uFE0F Kembali", callback_data: `start_back` }],
   ];
 }
 
@@ -1543,8 +1578,8 @@ export async function startBot() {
           }
         } else {
           const kb: TelegramBot.InlineKeyboardButton[][] = [
-            [{ text: "Bantuan", callback_data: `help_main` },
-             { text: "Aturan Grup", callback_data: `show_rules_${chatId}` }],
+            [{ text: "\u2753 Bantuan", callback_data: `help_main` },
+             { text: "\uD83D\uDCDC Aturan Grup", callback_data: `show_rules_${chatId}` }],
           ];
           await bot!.sendMessage(
             msg.chat.id,
@@ -1571,7 +1606,7 @@ export async function startBot() {
       if (!msg.from) return;
       await bot!.sendMessage(
         msg.chat.id,
-        `<b>Bantuan Bot Moderator</b>\n\nPilih kategori perintah di bawah:`,
+        `<b>\u2753 Bantuan Bot Moderator</b>\n\nPilih kategori perintah di bawah:`,
         { parse_mode: "HTML", reply_markup: { inline_keyboard: buildHelpMainKeyboard() } }
       );
     } catch (err) {
@@ -2756,7 +2791,7 @@ Wajib Sub Diblokir: <b>${stats.forceJoinBlocked}</b>`;
       // Help main menu
       if (data === "help_main") {
         await bot!.editMessageText(
-          `<b>Bantuan Bot Moderator</b>\n\nPilih kategori perintah di bawah:`,
+          `<b>\u2753 Bantuan Bot Moderator</b>\n\nPilih kategori perintah di bawah:`,
           { chat_id: chatId, message_id: msgId, parse_mode: "HTML", reply_markup: { inline_keyboard: buildHelpMainKeyboard() } }
         );
         await bot!.answerCallbackQuery(query.id);
@@ -2765,7 +2800,7 @@ Wajib Sub Diblokir: <b>${stats.forceJoinBlocked}</b>`;
 
       if (data === "help_umum") {
         await bot!.editMessageText(
-          `<b>Perintah Umum</b>\n\n` +
+          `<b>\uD83D\uDCD6 Perintah Umum</b>\n\n` +
           `<b>/start</b> - Menu utama bot\n` +
           `<b>/help</b> - Tampilkan bantuan ini\n` +
           `<b>/menu</b> - Menu pengaturan grup (Admin)\n` +
@@ -2773,8 +2808,8 @@ Wajib Sub Diblokir: <b>${stats.forceJoinBlocked}</b>`;
           `<b>/setgroup</b> - Daftarkan grup ke bot\n\n` +
           `<i>Semua perintah tersedia di grup maupun PM.</i>`,
           { chat_id: chatId, message_id: msgId, parse_mode: "HTML", reply_markup: { inline_keyboard: [
-            [{ text: "Moderasi", callback_data: `help_moderasi` }, { text: "Pengaturan", callback_data: `help_pengaturan` }],
-            [{ text: "Kembali", callback_data: `help_main` }],
+            [{ text: "\uD83D\uDEE1\uFE0F Moderasi", callback_data: `help_moderasi` }, { text: "\u2699\uFE0F Pengaturan", callback_data: `help_pengaturan` }],
+            [{ text: "\u2B05\uFE0F Kembali", callback_data: `help_main` }],
           ] } }
         );
         await bot!.answerCallbackQuery(query.id);
@@ -2783,7 +2818,7 @@ Wajib Sub Diblokir: <b>${stats.forceJoinBlocked}</b>`;
 
       if (data === "help_moderasi") {
         await bot!.editMessageText(
-          `<b>Perintah Moderasi</b>\n<i>(Khusus Admin, balas pesan pengguna)</i>\n\n` +
+          `<b>\uD83D\uDEE1\uFE0F Perintah Moderasi</b>\n<i>(Khusus Admin, balas pesan pengguna)</i>\n\n` +
           `<b>/warn</b> [alasan] - Beri peringatan\n` +
           `<b>/unwarn</b> - Hapus semua peringatan\n` +
           `<b>/warnings</b> - Cek jumlah peringatan\n` +
@@ -2803,8 +2838,8 @@ Wajib Sub Diblokir: <b>${stats.forceJoinBlocked}</b>`;
           `<b>/slow</b> [detik] - Mode lambat\n` +
           `<b>/setTitle</b> [judul] - Ubah judul grup`,
           { chat_id: chatId, message_id: msgId, parse_mode: "HTML", reply_markup: { inline_keyboard: [
-            [{ text: "Umum", callback_data: `help_umum` }, { text: "Pengaturan", callback_data: `help_pengaturan` }],
-            [{ text: "Kembali", callback_data: `help_main` }],
+            [{ text: "\uD83D\uDCD6 Umum", callback_data: `help_umum` }, { text: "\u2699\uFE0F Pengaturan", callback_data: `help_pengaturan` }],
+            [{ text: "\u2B05\uFE0F Kembali", callback_data: `help_main` }],
           ] } }
         );
         await bot!.answerCallbackQuery(query.id);
@@ -2813,7 +2848,7 @@ Wajib Sub Diblokir: <b>${stats.forceJoinBlocked}</b>`;
 
       if (data === "help_pengaturan") {
         await bot!.editMessageText(
-          `<b>Perintah Pengaturan</b>\n<i>(Khusus Admin)</i>\n\n` +
+          `<b>\u2699\uFE0F Perintah Pengaturan</b>\n<i>(Khusus Admin)</i>\n\n` +
           `<b>/menu</b> - Menu pengaturan lengkap (tombol)\n` +
           `<b>/settings</b> - Lihat pengaturan saat ini\n` +
           `<b>/stats</b> - Lihat statistik grup\n` +
@@ -2824,8 +2859,8 @@ Wajib Sub Diblokir: <b>${stats.forceJoinBlocked}</b>`;
           `<b>/delword</b> [kata] - Hapus kata terlarang\n\n` +
           `<i>Gunakan {user} untuk nama pengguna, {group} untuk nama grup di pesan sambutan.</i>`,
           { chat_id: chatId, message_id: msgId, parse_mode: "HTML", reply_markup: { inline_keyboard: [
-            [{ text: "Umum", callback_data: `help_umum` }, { text: "Moderasi", callback_data: `help_moderasi` }],
-            [{ text: "Kembali", callback_data: `help_main` }],
+            [{ text: "\uD83D\uDCD6 Umum", callback_data: `help_umum` }, { text: "\uD83D\uDEE1\uFE0F Moderasi", callback_data: `help_moderasi` }],
+            [{ text: "\u2B05\uFE0F Kembali", callback_data: `help_main` }],
           ] } }
         );
         await bot!.answerCallbackQuery(query.id);
@@ -2834,7 +2869,7 @@ Wajib Sub Diblokir: <b>${stats.forceJoinBlocked}</b>`;
 
       if (data === "help_pemilik") {
         await bot!.editMessageText(
-          `<b>Perintah Pemilik Bot</b>\n\n` +
+          `<b>\uD83D\uDC51 Perintah Pemilik Bot</b>\n\n` +
           `<b>/owner</b> - Panel pemilik bot (tombol)\n` +
           `<b>/broadcast</b> [pesan] - Kirim ke semua grup\n\n` +
           `<b>Keterangan:</b>\n` +
@@ -2842,8 +2877,8 @@ Wajib Sub Diblokir: <b>${stats.forceJoinBlocked}</b>`;
           `- Pemilik bot dikecualikan dari semua filter\n` +
           `- Admin grup dikecualikan dari filter grup`,
           { chat_id: chatId, message_id: msgId, parse_mode: "HTML", reply_markup: { inline_keyboard: [
-            [{ text: "Umum", callback_data: `help_umum` }, { text: "Moderasi", callback_data: `help_moderasi` }],
-            [{ text: "Kembali", callback_data: `help_main` }],
+            [{ text: "\uD83D\uDCD6 Umum", callback_data: `help_umum` }, { text: "\uD83D\uDEE1\uFE0F Moderasi", callback_data: `help_moderasi` }],
+            [{ text: "\u2B05\uFE0F Kembali", callback_data: `help_main` }],
           ] } }
         );
         await bot!.answerCallbackQuery(query.id);
@@ -3927,6 +3962,19 @@ Force Sub Diblokir: <b>${totalForceSub}</b>`;
           { chat_id: chatId, message_id: msgId, parse_mode: "HTML", reply_markup: { inline_keyboard: keyboard } }
         );
         await bot!.answerCallbackQuery(query.id);
+        return;
+      }
+
+      // Owner page navigation
+      if (data === "owner_page_1" || data === "owner_page_2" || data === "owner_page_3") {
+        if (!isBotOwner(query.from.id)) { await bot!.answerCallbackQuery(query.id, { text: "Hanya pemilik bot.", show_alert: true }); return; }
+        const page = parseInt(data.replace("owner_page_", ""));
+        const text = await buildOwnerPanelText(query.from);
+        await bot!.editMessageText(text, {
+          chat_id: chatId, message_id: msgId, parse_mode: "HTML",
+          reply_markup: { inline_keyboard: buildOwnerMenuKeyboard(page) },
+        });
+        await bot!.answerCallbackQuery(query.id, { text: `Halaman ${page}/3`, show_alert: false });
         return;
       }
 
