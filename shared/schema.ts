@@ -108,3 +108,16 @@ export const botOwnerData = pgTable("bot_owner_data", {
   dataJson: text("data_json").notNull().default("{}"),
   updatedAt: timestamp("updated_at").defaultNow(),
 });
+
+export const botUsers = pgTable("bot_users", {
+  id: serial("id").primaryKey(),
+  odId: text("od_id").notNull().unique(),
+  firstName: text("first_name").default(""),
+  lastName: text("last_name").default(""),
+  username: text("od_username").default(""),
+  startedAt: timestamp("started_at").defaultNow(),
+});
+
+export const insertBotUserSchema = createInsertSchema(botUsers).omit({ id: true, startedAt: true });
+export type InsertBotUser = z.infer<typeof insertBotUserSchema>;
+export type BotUser = typeof botUsers.$inferSelect;

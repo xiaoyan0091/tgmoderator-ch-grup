@@ -5,7 +5,8 @@ import {
   type Warning, type InsertWarning,
   type BotStats, type InsertBotStats,
   type ActivityLog, type InsertActivityLog,
-  users, groups, groupSettings, warnings, botStats, activityLogs, botOwnerData,
+  type BotUser, type InsertBotUser,
+  users, groups, groupSettings, warnings, botStats, activityLogs, botOwnerData, botUsers,
 } from "@shared/schema";
 import { db } from "./db";
 import { eq, desc, sql, and } from "drizzle-orm";
@@ -38,6 +39,10 @@ export interface IStorage {
 
   getOwnerData(): Promise<any>;
   saveOwnerData(data: any): Promise<void>;
+
+  upsertBotUser(user: InsertBotUser): Promise<BotUser>;
+  getAllBotUsers(): Promise<BotUser[]>;
+  getBotUserCount(): Promise<number>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -215,6 +220,33 @@ export class DatabaseStorage implements IStorage {
     } else {
       await db.insert(botOwnerData).values({ dataJson: json });
     }
+  }
+
+  async upsertBotUser(user: InsertBotUser): Promise<BotUser> {
+    const [result] = await db
+      .insert(botUsers)
+      .values(user)
+      .onConflictDoUpdate({
+        target: botUsers.odId,
+        set: {
+          firstName: user.firstName,
+          lastName: user.lastName,
+          username: user.username,
+        },
+      })
+      .returning();
+    return result;
+  }
+
+  async getAllBotUsers(): Promise<BotUser[]> {
+    return db.select().from(botUsers);
+  }
+
+  async getBotUserCount(): Promise<number> {
+    const result = await db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(botUsers);
+    return result[0]?.count ?? 0;
   }
 }
 
