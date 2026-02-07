@@ -59,6 +59,7 @@ let jadwalData: JadwalData = {
 };
 
 const ownerWaitingState = new Map<number, { type: string; extra?: string }>();
+const adminWaitingState = new Map<number, { type: string; groupId: string; messageId?: number; chatId?: number }>();
 let autoPostInterval: NodeJS.Timeout | null = null;
 let lastAutoPostDate: string = "";
 let lastJadwalTime: number | null = null;
@@ -193,52 +194,66 @@ async function checkForceJoin(msg: TelegramBot.Message): Promise<boolean> {
 
   if (await isAdmin(msg.chat.id, msg.from.id)) return true;
 
-  for (const channel of settings.forceJoinChannels) {
+  const channels = settings.forceJoinChannels as string[];
+  let notSubscribed = false;
+
+  for (const channel of channels) {
     try {
       const member = await bot!.getChatMember(`@${channel}`, msg.from.id);
-      if (["left", "kicked"].includes(member.status)) {
-        await bot!.deleteMessage(msg.chat.id, msg.message_id);
-
-        const buttons: TelegramBot.InlineKeyboardButton[][] = settings.forceJoinChannels.map((ch: string) => ([{
-          text: `Subscribe @${ch}`,
-          url: `https://t.me/${ch}`,
-        }]));
-
-        buttons.push([{
-          text: "Sudah Subscribe",
-          callback_data: `forcejoin_check_${chatId}`,
-        }]);
-
-        const notification = await bot!.sendMessage(
-          msg.chat.id,
-          `${getUserMention(msg.from)}, kamu harus subscribe ke channel/grup yang diwajibkan sebelum bisa mengirim pesan di sini.`,
-          {
-            reply_markup: { inline_keyboard: buttons },
-            parse_mode: "HTML",
-          }
-        );
-
-        await storage.incrementStat(chatId, "forceJoinBlocked");
-        await storage.incrementStat(chatId, "messagesDeleted");
-        await storage.addLog({
-          chatId,
-          action: "force_join",
-          targetUser: getUserDisplayName(msg.from),
-          performedBy: "bot",
-          details: `Pesan dihapus - belum subscribe ke channel wajib`,
-        });
-
-        setTimeout(async () => {
-          try { await bot!.deleteMessage(msg.chat.id, notification.message_id); } catch {}
-        }, 30000);
-
-        return false;
+      if (!member || ["left", "kicked"].includes(member.status)) {
+        notSubscribed = true;
+        break;
       }
     } catch {
-      continue;
+      notSubscribed = true;
+      break;
     }
   }
-  return true;
+
+  if (!notSubscribed) return true;
+
+  try {
+    await bot!.deleteMessage(msg.chat.id, msg.message_id);
+  } catch {}
+
+  const buttons: TelegramBot.InlineKeyboardButton[][] = channels.map((ch: string) => ([{
+    text: `Subscribe @${ch}`,
+    url: `https://t.me/${ch}`,
+  }]));
+
+  buttons.push([{
+    text: "Sudah Subscribe",
+    callback_data: `forcejoin_check_${chatId}`,
+  }]);
+
+  try {
+    const notification = await bot!.sendMessage(
+      msg.chat.id,
+      `${getUserMention(msg.from)}, kamu harus subscribe ke semua channel yang diwajibkan sebelum bisa mengirim pesan atau menggunakan perintah di grup ini.`,
+      {
+        reply_markup: { inline_keyboard: buttons },
+        parse_mode: "HTML",
+      }
+    );
+
+    await storage.incrementStat(chatId, "forceJoinBlocked");
+    await storage.incrementStat(chatId, "messagesDeleted");
+    await storage.addLog({
+      chatId,
+      action: "force_join",
+      targetUser: getUserDisplayName(msg.from),
+      performedBy: "bot",
+      details: `Pesan dihapus - belum subscribe ke channel wajib`,
+    });
+
+    setTimeout(async () => {
+      try { await bot!.deleteMessage(msg.chat.id, notification.message_id); } catch {}
+    }, 30000);
+  } catch (err) {
+    console.error("Error sending force join notification:", err);
+  }
+
+  return false;
 }
 
 async function checkAntiSpam(msg: TelegramBot.Message): Promise<boolean> {
@@ -506,7 +521,8 @@ function buildSettingsKeyboard(chatId: string, settings: any, prefix = "toggle")
 }
 
 function buildForceJoinKeyboard(chatId: string, settings: any, prefix = "toggle", removePrefix = "removechannel", addPrefix = "addchannel"): TelegramBot.InlineKeyboardButton[][] {
-  const back = prefix === "pmtoggle" ? `pm_group_${chatId}` : `menu_main_${chatId}`;
+  const isPm = prefix === "pmtoggle";
+  const back = isPm ? `pm_group_${chatId}` : `menu_main_${chatId}`;
   const kb: TelegramBot.InlineKeyboardButton[][] = [
     [{ text: `Wajib Sub: ${s(settings.forceJoinEnabled)}`, callback_data: `${prefix}_forceJoinEnabled_${chatId}` }],
   ];
@@ -514,7 +530,7 @@ function buildForceJoinKeyboard(chatId: string, settings: any, prefix = "toggle"
   if (channels.length > 0) {
     channels.forEach((ch: string) => {
       kb.push([
-        { text: `@${ch}`, callback_data: `noop` },
+        { text: `@${ch}`, url: `https://t.me/${ch}` },
         { text: "Hapus", callback_data: `${removePrefix}_${chatId}_${ch}` },
       ]);
     });
@@ -3389,21 +3405,24 @@ Kamu juga bisa menyesuaikan isi pesan dengan data kontekstual. Misalnya, menyebu
         const settings = await storage.getSettings(groupChatId);
 
         if (!settings?.forceJoinEnabled || !settings.forceJoinChannels?.length) {
-          await bot!.answerCallbackQuery(query.id, { text: "Force Sub tidak aktif.", show_alert: true });
+          await bot!.answerCallbackQuery(query.id, { text: "Wajib Sub tidak aktif di grup ini.", show_alert: true });
+          try { await bot!.deleteMessage(chatId, msgId); } catch {}
           return;
         }
 
+        const channels = settings.forceJoinChannels as string[];
         let allJoined = true;
-        for (const channel of settings.forceJoinChannels) {
+        const notJoinedChannels: string[] = [];
+        for (const channel of channels) {
           try {
             const member = await bot!.getChatMember(`@${channel}`, query.from.id);
-            if (["left", "kicked"].includes(member.status)) {
+            if (!member || ["left", "kicked"].includes(member.status)) {
               allJoined = false;
-              break;
+              notJoinedChannels.push(channel);
             }
           } catch {
             allJoined = false;
-            break;
+            notJoinedChannels.push(channel);
           }
         }
 
@@ -3411,7 +3430,7 @@ Kamu juga bisa menyesuaikan isi pesan dengan data kontekstual. Misalnya, menyebu
           await bot!.answerCallbackQuery(query.id, { text: "Terverifikasi! Kamu sudah subscribe ke semua channel. Silakan kirim pesan.", show_alert: true });
           try { await bot!.deleteMessage(chatId, msgId); } catch {}
         } else {
-          await bot!.answerCallbackQuery(query.id, { text: "Kamu belum subscribe ke semua channel yang diwajibkan.", show_alert: true });
+          await bot!.answerCallbackQuery(query.id, { text: `Kamu belum subscribe ke: ${notJoinedChannels.map(c => `@${c}`).join(", ")}`, show_alert: true });
         }
         return;
       }
@@ -3632,9 +3651,14 @@ Kamu juga bisa menyesuaikan isi pesan dengan data kontekstual. Misalnya, menyebu
         const settings = await storage.getSettings(groupId);
         if (!settings) { await bot!.answerCallbackQuery(query.id, { text: "Tidak ditemukan.", show_alert: true }); return; }
         const group = await storage.getGroup(groupId);
+        const channels = (settings.forceJoinChannels as string[]) || [];
+        let text = `<b>Wajib Sub</b>\n<i>${escapeHtml(group?.title || "Grup")}</i>`;
+        text += `\n\nStatus: <b>${settings.forceJoinEnabled ? "Aktif" : "Nonaktif"}</b>`;
+        text += `\nChannel: <b>${channels.length > 0 ? channels.map(c => `@${c}`).join(", ") : "Belum ada"}</b>`;
+        text += `\n\nGunakan tombol di bawah untuk mengelola wajib sub.`;
         await bot!.editMessageText(
-          `<b>Wajib Sub</b>\n<i>${escapeHtml(group?.title || "Grup")}</i>\n\nTambah channel: <code>/setforcesub username</code> di grup`,
-          { chat_id: chatId, message_id: msgId, parse_mode: "HTML", reply_markup: { inline_keyboard: buildForceJoinKeyboard(groupId, settings, "pmtoggle", "pmremovech") } }
+          text,
+          { chat_id: chatId, message_id: msgId, parse_mode: "HTML", reply_markup: { inline_keyboard: buildForceJoinKeyboard(groupId, settings, "pmtoggle", "pmremovech", "pmaddch") } }
         );
         await bot!.answerCallbackQuery(query.id);
         return;
@@ -3716,8 +3740,13 @@ Kamu juga bisa menyesuaikan isi pesan dengan data kontekstual. Misalnya, menyebu
 
         const group = await storage.getGroup(groupId);
         if (field === "forceJoinEnabled") {
+          const updatedChannels = (updated.forceJoinChannels as string[]) || [];
+          let fjText = `<b>Wajib Sub</b>\n<i>${escapeHtml(group?.title || "Grup")}</i>`;
+          fjText += `\n\nStatus: <b>${updated.forceJoinEnabled ? "Aktif" : "Nonaktif"}</b>`;
+          fjText += `\nChannel: <b>${updatedChannels.length > 0 ? updatedChannels.map(c => `@${c}`).join(", ") : "Belum ada"}</b>`;
+          fjText += `\n\nGunakan tombol di bawah untuk mengelola wajib sub.`;
           await bot!.editMessageText(
-            `<b>Wajib Sub</b>\n<i>${escapeHtml(group?.title || "Grup")}</i>\n\nTambah channel: <code>/setforcesub username</code> di grup`,
+            fjText,
             { chat_id: chatId, message_id: msgId, parse_mode: "HTML", reply_markup: { inline_keyboard: buildForceJoinKeyboard(groupId, updated, "pmtoggle", "pmremovech", "pmaddch") } }
           );
         } else if (field === "wordFilterEnabled") {
@@ -3781,10 +3810,15 @@ Kamu juga bisa menyesuaikan isi pesan dengan data kontekstual. Misalnya, menyebu
         const updated = await storage.getSettings(groupId);
         if (!updated) return;
         const group = await storage.getGroup(groupId);
-        await bot!.answerCallbackQuery(query.id, { text: `@${channel} dihapus.` });
+        const updatedChannels = (updated.forceJoinChannels as string[]) || [];
+        let text = `<b>Wajib Sub</b>\n<i>${escapeHtml(group?.title || "Grup")}</i>`;
+        text += `\n\nStatus: <b>${updated.forceJoinEnabled ? "Aktif" : "Nonaktif"}</b>`;
+        text += `\nChannel: <b>${updatedChannels.length > 0 ? updatedChannels.map(c => `@${c}`).join(", ") : "Belum ada"}</b>`;
+        text += `\n\nGunakan tombol di bawah untuk mengelola wajib sub.`;
+        await bot!.answerCallbackQuery(query.id, { text: `@${channel} dihapus dari daftar wajib sub.` });
         await bot!.editMessageText(
-          `<b>Wajib Sub</b>\n<i>${escapeHtml(group?.title || "Grup")}</i>\n\nTambah channel: <code>/setforcesub username</code> di grup`,
-          { chat_id: chatId, message_id: msgId, parse_mode: "HTML", reply_markup: { inline_keyboard: buildForceJoinKeyboard(groupId, updated, "pmtoggle", "pmremovech") } }
+          text,
+          { chat_id: chatId, message_id: msgId, parse_mode: "HTML", reply_markup: { inline_keyboard: buildForceJoinKeyboard(groupId, updated, "pmtoggle", "pmremovech", "pmaddch") } }
         );
         return;
       }
@@ -3816,14 +3850,19 @@ Kamu juga bisa menyesuaikan isi pesan dengan data kontekstual. Misalnya, menyebu
         return;
       }
 
-      // Force join menu
+      // Force join menu (in-group)
       if (data.startsWith("menu_forcejoin_")) {
         const groupId = data.replace("menu_forcejoin_", "");
         if (!(await isAdmin(chatId, query.from.id)) && !isBotOwner(query.from.id)) { await bot!.answerCallbackQuery(query.id, { text: "Hanya admin.", show_alert: true }); return; }
         const settings = await storage.getSettings(groupId);
         if (!settings) { await bot!.answerCallbackQuery(query.id, { text: "Tidak ditemukan.", show_alert: true }); return; }
+        const channels = (settings.forceJoinChannels as string[]) || [];
+        let text = `<b>Wajib Sub</b>`;
+        text += `\n\nStatus: <b>${settings.forceJoinEnabled ? "Aktif" : "Nonaktif"}</b>`;
+        text += `\nChannel: <b>${channels.length > 0 ? channels.map(c => `@${c}`).join(", ") : "Belum ada"}</b>`;
+        text += `\n\nTambah: <code>/setforcesub username</code>\nHapus: <code>/delforcesub username</code>`;
         await bot!.editMessageText(
-          `<b>Wajib Sub</b>\n\nTambah: <code>/setforcesub username</code>\nHapus: <code>/delforcesub username</code>`,
+          text,
           { chat_id: chatId, message_id: msgId, parse_mode: "HTML", reply_markup: { inline_keyboard: buildForceJoinKeyboard(groupId, settings) } }
         );
         await bot!.answerCallbackQuery(query.id);
@@ -3906,8 +3945,13 @@ Kamu juga bisa menyesuaikan isi pesan dengan data kontekstual. Misalnya, menyebu
         await bot!.answerCallbackQuery(query.id, { text: `${labelMap[field]} ${!currentVal ? "diaktifkan" : "dinonaktifkan"}.` });
 
         if (field === "forceJoinEnabled") {
+          const updatedChannels = (updated.forceJoinChannels as string[]) || [];
+          let fjText = `<b>Wajib Sub</b>`;
+          fjText += `\n\nStatus: <b>${updated.forceJoinEnabled ? "Aktif" : "Nonaktif"}</b>`;
+          fjText += `\nChannel: <b>${updatedChannels.length > 0 ? updatedChannels.map(c => `@${c}`).join(", ") : "Belum ada"}</b>`;
+          fjText += `\n\nTambah: <code>/setforcesub username</code>\nHapus: <code>/delforcesub username</code>`;
           await bot!.editMessageText(
-            `<b>Wajib Sub</b>\n\nTambah: <code>/setforcesub username</code>\nHapus: <code>/delforcesub username</code>`,
+            fjText,
             { chat_id: chatId, message_id: msgId, parse_mode: "HTML", reply_markup: { inline_keyboard: buildForceJoinKeyboard(groupId, updated) } }
           );
         } else if (field === "wordFilterEnabled") {
@@ -3964,9 +4008,16 @@ Kamu juga bisa menyesuaikan isi pesan dengan data kontekstual. Misalnya, menyebu
         return;
       }
 
-      // Add channel prompt (PM)
+      // Add channel via PM (state-based input)
       if (data.startsWith("pmaddch_")) {
-        await bot!.answerCallbackQuery(query.id, { text: "Kirim di grup:\n/setforcesub username\n\nContoh: /setforcesub mychannel", show_alert: true });
+        const groupId = data.replace("pmaddch_", "");
+        adminWaitingState.set(query.from.id, { type: "add_forcesub_channel", groupId, messageId: msgId, chatId });
+        await bot!.answerCallbackQuery(query.id);
+        await bot!.sendMessage(
+          chatId,
+          `Kirim username channel yang ingin ditambahkan ke daftar wajib sub.\n\nContoh: <code>mychannel</code> atau <code>@mychannel</code>\n\nKetik /batal untuk membatalkan.`,
+          { parse_mode: "HTML" }
+        );
         return;
       }
 
@@ -4012,7 +4063,7 @@ Kamu juga bisa menyesuaikan isi pesan dengan data kontekstual. Misalnya, menyebu
         return;
       }
 
-      // Remove channel from force join
+      // Remove channel from force join (in-group)
       if (data.startsWith("removechannel_")) {
         const rest = data.replace("removechannel_", "");
         const firstUnderscore = rest.indexOf("_");
@@ -4027,9 +4078,14 @@ Kamu juga bisa menyesuaikan isi pesan dengan data kontekstual. Misalnya, menyebu
         await storage.updateSettings(groupId, { forceJoinChannels: channels });
         const updated = await storage.getSettings(groupId);
         if (!updated) return;
-        await bot!.answerCallbackQuery(query.id, { text: `@${channel} dihapus.` });
+        const updatedChannels = (updated.forceJoinChannels as string[]) || [];
+        let fjText = `<b>Wajib Sub</b>`;
+        fjText += `\n\nStatus: <b>${updated.forceJoinEnabled ? "Aktif" : "Nonaktif"}</b>`;
+        fjText += `\nChannel: <b>${updatedChannels.length > 0 ? updatedChannels.map(c => `@${c}`).join(", ") : "Belum ada"}</b>`;
+        fjText += `\n\nTambah: <code>/setforcesub username</code>\nHapus: <code>/delforcesub username</code>`;
+        await bot!.answerCallbackQuery(query.id, { text: `@${channel} dihapus dari daftar wajib sub.` });
         await bot!.editMessageText(
-          `<b>Wajib Sub</b>\n\nTambah: <code>/setforcesub username</code>\nHapus: <code>/delforcesub username</code>`,
+          fjText,
           { chat_id: chatId, message_id: msgId, parse_mode: "HTML", reply_markup: { inline_keyboard: buildForceJoinKeyboard(groupId, updated) } }
         );
         return;
@@ -4688,23 +4744,83 @@ Force Sub Diblokir: <b>${totalForceSub}</b>`;
     try {
       if (!msg.from || !msg.chat) return;
 
-      if (msg.chat.type === "private" && isBotOwner(msg.from.id)) {
-        if (msg.text?.startsWith("/")) return;
-        const waiting = ownerWaitingState.get(msg.from.id);
-        if (waiting) {
-          if (msg.photo || msg.video || msg.animation) {
-            await handleOwnerMediaInput(msg);
+      if (msg.chat.type === "private") {
+        // Handle /batal to cancel admin waiting state
+        if (msg.text === "/batal") {
+          if (adminWaitingState.has(msg.from.id)) {
+            adminWaitingState.delete(msg.from.id);
+            await bot!.sendMessage(msg.chat.id, "Dibatalkan.");
+          }
+          return;
+        }
+
+        // Handle admin waiting state (for PM channel add etc.)
+        const adminWaiting = adminWaitingState.get(msg.from.id);
+        if (adminWaiting && msg.text && !msg.text.startsWith("/")) {
+          if (adminWaiting.type === "add_forcesub_channel") {
+            const channel = msg.text.replace("@", "").trim();
+            if (!channel || channel.includes(" ")) {
+              await bot!.sendMessage(msg.chat.id, "Username channel tidak valid. Kirim ulang username channel.\n\nContoh: <code>mychannel</code>", { parse_mode: "HTML" });
+              return;
+            }
+            const groupId = adminWaiting.groupId;
+            const settings = await storage.getSettings(groupId);
+            if (!settings) {
+              await bot!.sendMessage(msg.chat.id, "Pengaturan grup tidak ditemukan.");
+              adminWaitingState.delete(msg.from.id);
+              return;
+            }
+            const current = (settings.forceJoinChannels as string[]) ?? [];
+            if (current.includes(channel)) {
+              await bot!.sendMessage(msg.chat.id, `Channel @${channel} sudah ada di daftar wajib sub.`);
+              adminWaitingState.delete(msg.from.id);
+              return;
+            }
+            await storage.updateSettings(groupId, {
+              forceJoinChannels: [...current, channel],
+              forceJoinEnabled: true,
+            });
+            const updated = await storage.getSettings(groupId);
+            if (!updated) { adminWaitingState.delete(msg.from.id); return; }
+            const group = await storage.getGroup(groupId);
+            const updatedChannels = (updated.forceJoinChannels as string[]) || [];
+            let fjText = `<b>Wajib Sub</b>\n<i>${escapeHtml(group?.title || "Grup")}</i>`;
+            fjText += `\n\nStatus: <b>${updated.forceJoinEnabled ? "Aktif" : "Nonaktif"}</b>`;
+            fjText += `\nChannel: <b>${updatedChannels.length > 0 ? updatedChannels.map(c => `@${c}`).join(", ") : "Belum ada"}</b>`;
+            fjText += `\n\nGunakan tombol di bawah untuk mengelola wajib sub.`;
+            await bot!.sendMessage(msg.chat.id, `Channel @${channel} berhasil ditambahkan ke daftar wajib sub.`);
+            if (adminWaiting.messageId && adminWaiting.chatId) {
+              try {
+                await bot!.editMessageText(
+                  fjText,
+                  { chat_id: adminWaiting.chatId, message_id: adminWaiting.messageId, parse_mode: "HTML", reply_markup: { inline_keyboard: buildForceJoinKeyboard(groupId, updated, "pmtoggle", "pmremovech", "pmaddch") } }
+                );
+              } catch {}
+            }
+            adminWaitingState.delete(msg.from.id);
             return;
           }
-          if (msg.text) {
-            await handleOwnerTextInput(msg, waiting);
-            return;
+          adminWaitingState.delete(msg.from.id);
+          return;
+        }
+
+        // Handle bot owner waiting state
+        if (isBotOwner(msg.from.id)) {
+          if (msg.text?.startsWith("/")) return;
+          const waiting = ownerWaitingState.get(msg.from.id);
+          if (waiting) {
+            if (msg.photo || msg.video || msg.animation) {
+              await handleOwnerMediaInput(msg);
+              return;
+            }
+            if (msg.text) {
+              await handleOwnerTextInput(msg, waiting);
+              return;
+            }
           }
         }
         return;
       }
-
-      if (msg.chat.type === "private") return;
 
       const chatId = msg.chat.id.toString();
       await ensureGroupAndSettings(chatId, msg.chat.title || "Grup Tidak Dikenal");
