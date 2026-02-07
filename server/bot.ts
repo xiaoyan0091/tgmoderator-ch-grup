@@ -947,6 +947,8 @@ async function handleOwnerTextInput(msg: TelegramBot.Message, waiting: { type: s
   const text = msg.text?.trim() || "";
   const chatId = msg.chat.id;
 
+  try {
+
   if (waiting.type === "jd_media_url") {
     const hari = waiting.extra || "";
     if (text.startsWith("http://") || text.startsWith("https://")) {
@@ -1017,6 +1019,7 @@ async function handleOwnerTextInput(msg: TelegramBot.Message, waiting: { type: s
         `\u274C <b>Format Salah!</b>\n\nHarus menggunakan separator <b>|</b>\n\nContoh:\n<code>Purple River Season 2|Senin</code>`,
         { parse_mode: "HTML" }
       );
+      ownerWaitingState.delete(msg.from!.id);
       return;
     }
 
@@ -1221,8 +1224,11 @@ async function handleOwnerTextInput(msg: TelegramBot.Message, waiting: { type: s
     } catch {
       await bot!.sendMessage(chatId, "\u274C Format jam salah! Harus angka HH:MM");
     }
-    ownerWaitingState.delete(msg.from!.id);
     return;
+  }
+
+  } finally {
+    ownerWaitingState.delete(msg.from!.id);
   }
 }
 
@@ -4027,6 +4033,7 @@ Force Sub Diblokir: <b>${totalForceSub}</b>`;
       if (!msg.from || !msg.chat) return;
 
       if (msg.chat.type === "private" && isBotOwner(msg.from.id)) {
+        if (msg.text?.startsWith("/")) return;
         const waiting = ownerWaitingState.get(msg.from.id);
         if (waiting) {
           if (msg.photo || msg.video || msg.animation) {
