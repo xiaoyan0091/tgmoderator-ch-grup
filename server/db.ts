@@ -103,6 +103,14 @@ export async function pushSchema() {
       );
     `);
 
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS bot_owner_data (
+        id SERIAL PRIMARY KEY,
+        data_json TEXT NOT NULL DEFAULT '{}',
+        updated_at TIMESTAMP DEFAULT NOW()
+      );
+    `);
+
     console.log("Database schema pushed successfully");
   } catch (error) {
     console.error("Error pushing schema:", error);

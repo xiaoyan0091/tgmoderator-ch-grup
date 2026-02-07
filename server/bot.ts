@@ -586,12 +586,30 @@ function buildPmConfigKeyboard(groupId: string): TelegramBot.InlineKeyboardButto
 }
 
 async function loadJadwalData() {
-  const data = await storage.getOwnerData();
-  if (data) Object.assign(jadwalData, data);
+  try {
+    const data = await storage.getOwnerData();
+    if (data) {
+      Object.assign(jadwalData, data);
+      if (!jadwalData.harian) jadwalData.harian = { Senin: [], Selasa: [], Rabu: [], Kamis: [], Jumat: [], Sabtu: [], Minggu: [] };
+      if (!jadwalData.upcoming) jadwalData.upcoming = [];
+      if (!jadwalData.channels) jadwalData.channels = [];
+      if (!jadwalData.media_jadwal) {
+        jadwalData.media_jadwal = {};
+        for (const d of VALID_DAYS) jadwalData.media_jadwal[d] = { type: "", url: "" };
+      }
+    }
+    console.log("Jadwal data loaded successfully");
+  } catch (err) {
+    console.error("Error loading jadwal data (using defaults):", err);
+  }
 }
 
 async function saveJadwalData() {
-  await storage.saveOwnerData(jadwalData);
+  try {
+    await storage.saveOwnerData(jadwalData);
+  } catch (err) {
+    console.error("Error saving jadwal data:", err);
+  }
 }
 
 function getTodayIndo(): string {
