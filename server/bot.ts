@@ -3069,9 +3069,111 @@ Kamu juga bisa menyesuaikan isi pesan dengan data kontekstual. Misalnya, menyebu
     return { cleanText, buttons };
   }
 
+  function entitiesToHtml(text: string, entities?: TelegramBot.MessageEntity[]): string {
+    if (!entities || entities.length === 0) return escapeHtml(text);
+
+    const codePoints = Array.from(text);
+    const sorted = [...entities].sort((a, b) => a.offset - b.offset || b.length - a.length);
+
+    type Tag = { pos: number; order: number; str: string };
+    const opens: Tag[] = [];
+    const closes: Tag[] = [];
+
+    for (let i = 0; i < sorted.length; i++) {
+      const e = sorted[i];
+      const start = e.offset;
+      const end = e.offset + e.length;
+      const eType = e.type as string;
+
+      switch (eType) {
+        case "bold":
+          opens.push({ pos: start, order: i, str: "<b>" });
+          closes.push({ pos: end, order: i, str: "</b>" });
+          break;
+        case "italic":
+          opens.push({ pos: start, order: i, str: "<i>" });
+          closes.push({ pos: end, order: i, str: "</i>" });
+          break;
+        case "underline":
+          opens.push({ pos: start, order: i, str: "<u>" });
+          closes.push({ pos: end, order: i, str: "</u>" });
+          break;
+        case "strikethrough":
+          opens.push({ pos: start, order: i, str: "<s>" });
+          closes.push({ pos: end, order: i, str: "</s>" });
+          break;
+        case "spoiler":
+          opens.push({ pos: start, order: i, str: "<tg-spoiler>" });
+          closes.push({ pos: end, order: i, str: "</tg-spoiler>" });
+          break;
+        case "code":
+          opens.push({ pos: start, order: i, str: "<code>" });
+          closes.push({ pos: end, order: i, str: "</code>" });
+          break;
+        case "pre":
+          if (e.language) {
+            opens.push({ pos: start, order: i, str: `<pre><code class="language-${escapeHtml(e.language)}">` });
+            closes.push({ pos: end, order: i, str: "</code></pre>" });
+          } else {
+            opens.push({ pos: start, order: i, str: "<pre>" });
+            closes.push({ pos: end, order: i, str: "</pre>" });
+          }
+          break;
+        case "text_link":
+          opens.push({ pos: start, order: i, str: `<a href="${escapeHtml(e.url || "")}">` });
+          closes.push({ pos: end, order: i, str: "</a>" });
+          break;
+        case "text_mention":
+          if (e.user) {
+            opens.push({ pos: start, order: i, str: `<a href="tg://user?id=${e.user.id}">` });
+            closes.push({ pos: end, order: i, str: "</a>" });
+          }
+          break;
+        case "blockquote":
+          opens.push({ pos: start, order: i, str: "<blockquote>" });
+          closes.push({ pos: end, order: i, str: "</blockquote>" });
+          break;
+        case "expandable_blockquote":
+          opens.push({ pos: start, order: i, str: '<blockquote expandable>' });
+          closes.push({ pos: end, order: i, str: "</blockquote>" });
+          break;
+      }
+    }
+
+    const tagMap = new Map<number, { openTags: string[]; closeTags: string[] }>();
+
+    for (const o of opens) {
+      if (!tagMap.has(o.pos)) tagMap.set(o.pos, { openTags: [], closeTags: [] });
+      tagMap.get(o.pos)!.openTags.push(o.str);
+    }
+    for (const c of closes) {
+      if (!tagMap.has(c.pos)) tagMap.set(c.pos, { openTags: [], closeTags: [] });
+      tagMap.get(c.pos)!.closeTags.push(c.str);
+    }
+
+    let result = "";
+    for (let i = 0; i <= codePoints.length; i++) {
+      const entry = tagMap.get(i);
+      if (entry) {
+        for (const ct of entry.closeTags) {
+          result += ct;
+        }
+        for (const ot of entry.openTags) {
+          result += ot;
+        }
+      }
+      if (i < codePoints.length) {
+        result += escapeHtml(codePoints[i]);
+      }
+    }
+
+    return result;
+  }
+
   // /broadcast - Kirim pesan ke semua pengguna yang start bot
-  // Support: text, reply media (photo, video, document, audio, sticker, animation, voice, video_note), caption
-  bot.onText(/\/broadcast(?:\s|$)(.*)/, async (msg, match) => {
+  // Support: direct text, reply text, reply media (photo/video/document/audio/sticker/animation/voice/video_note)
+  // Support: Telegram native formatting (entities), custom markdown, fillings, button URLs
+  bot.onText(/\/broadcast(?:\s|$|@)([\s\S]*)/, async (msg, match) => {
     try {
       if (!msg.from) return;
 
@@ -3080,19 +3182,33 @@ Kamu juga bisa menyesuaikan isi pesan dengan data kontekstual. Misalnya, menyebu
         return;
       }
 
-      const rawArgs = (match![1] || "").trim();
+      const rawArgs = (match?.[1] || "").trim();
       const replyMsg = msg.reply_to_message;
 
       const hasMedia = replyMsg && (replyMsg.photo || replyMsg.video || replyMsg.document || replyMsg.audio || replyMsg.animation || replyMsg.sticker || replyMsg.voice || replyMsg.video_note);
-      const replyText = replyMsg?.text || replyMsg?.caption || "";
-      const rawMessage = rawArgs || replyText;
 
-      if (!rawMessage && !hasMedia) {
+      let broadcastHtml = "";
+      let replyEntities: TelegramBot.MessageEntity[] | undefined;
+
+      if (rawArgs) {
+        broadcastHtml = parseMarkdownToHtml(rawArgs);
+      } else if (replyMsg) {
+        const replyRawText = replyMsg.text || replyMsg.caption || "";
+        replyEntities = replyMsg.entities || replyMsg.caption_entities;
+
+        if (replyEntities && replyEntities.length > 0) {
+          broadcastHtml = entitiesToHtml(replyRawText, replyEntities);
+        } else if (replyRawText) {
+          broadcastHtml = parseMarkdownToHtml(replyRawText);
+        }
+      }
+
+      if (!broadcastHtml && !hasMedia) {
         await bot!.sendMessage(msg.chat.id,
           "\u274C Pesan broadcast tidak boleh kosong!\n\n" +
           "<b>Cara penggunaan:</b>\n" +
           "1. <code>/broadcast pesan anda</code>\n" +
-          "2. Reply media/pesan + <code>/broadcast</code>\n" +
+          "2. Reply pesan/media + <code>/broadcast</code>\n" +
           "3. Reply media + <code>/broadcast caption baru</code>",
           { parse_mode: "HTML" }
         );
@@ -3158,19 +3274,27 @@ Kamu juga bisa menyesuaikan isi pesan dengan data kontekstual. Misalnya, menyebu
             username: user.username || "",
           };
 
-          let processedText = rawMessage;
-          if (processedText) {
-            processedText = parseMarkdownToHtml(processedText);
+          const { cleanText, buttons } = extractButtonUrls(broadcastHtml || "");
+
+          let finalText = cleanText;
+          let protect = false;
+          let preview = false;
+          let nonotif = false;
+
+          if (finalText) {
+            const fillings = applyFillings(finalText, userObj);
+            finalText = fillings.text;
+            protect = fillings.protect;
+            preview = fillings.preview;
+            nonotif = fillings.nonotif;
           }
-          const { cleanText, buttons } = extractButtonUrls(processedText || "");
-          const fillings = applyFillings(cleanText, userObj);
 
           const baseOptions: any = {
             parse_mode: "HTML",
-            disable_notification: fillings.nonotif,
+            disable_notification: nonotif,
           };
 
-          if (fillings.protect) {
+          if (protect) {
             baseOptions.protect_content = true;
           }
 
@@ -3180,8 +3304,8 @@ Kamu juga bisa menyesuaikan isi pesan dengan data kontekstual. Misalnya, menyebu
 
           if (mediaType && mediaFileId) {
             const captionOpts: any = { ...baseOptions };
-            if (fillings.text && mediaType !== "sticker" && mediaType !== "video_note") {
-              captionOpts.caption = fillings.text;
+            if (finalText && mediaType !== "sticker" && mediaType !== "video_note") {
+              captionOpts.caption = finalText;
             }
 
             switch (mediaType) {
@@ -3210,10 +3334,12 @@ Kamu juga bisa menyesuaikan isi pesan dengan data kontekstual. Misalnya, menyebu
                 await bot!.sendVideoNote(user.odId, mediaFileId as any, baseOptions);
                 break;
               default:
-                await bot!.sendMessage(user.odId, fillings.text, { ...baseOptions, disable_web_page_preview: !fillings.preview });
+                if (finalText) {
+                  await bot!.sendMessage(user.odId, finalText, { ...baseOptions, disable_web_page_preview: !preview });
+                }
             }
-          } else {
-            await bot!.sendMessage(user.odId, fillings.text, { ...baseOptions, disable_web_page_preview: !fillings.preview });
+          } else if (finalText) {
+            await bot!.sendMessage(user.odId, finalText, { ...baseOptions, disable_web_page_preview: !preview });
           }
           sent++;
         } catch (e: any) {
@@ -3237,11 +3363,11 @@ Kamu juga bisa menyesuaikan isi pesan dengan data kontekstual. Misalnya, menyebu
       try {
         await bot!.editMessageText(
           `\u2705 <b>Broadcast Selesai!</b>\n\n` +
-          `\uD83D\uDCE8 <b>Total Target:</b> ${allUsers.length} pengguna\n` +
-          (mediaType ? `\uD83C\uDFA8 <b>Media:</b> ${mediaType}\n` : "") +
-          `\u2705 <b>Terkirim:</b> ${sent}\n` +
-          `\u274C <b>Gagal:</b> ${failed}\n` +
-          `\uD83D\uDEAB <b>Blocked/Deaktif:</b> ${blocked}\n\n` +
+          `Total Target: <b>${allUsers.length}</b> pengguna\n` +
+          (mediaType ? `Media: <b>${mediaType}</b>\n` : "") +
+          `Terkirim: <b>${sent}</b>\n` +
+          `Gagal: <b>${failed}</b>\n` +
+          `Blocked/Deaktif: <b>${blocked}</b>\n\n` +
           `<i>Broadcast dikirim ke semua pengguna yang pernah /start bot.</i>`,
           { chat_id: msg.chat.id, message_id: statusMsg.message_id, parse_mode: "HTML" }
         );
