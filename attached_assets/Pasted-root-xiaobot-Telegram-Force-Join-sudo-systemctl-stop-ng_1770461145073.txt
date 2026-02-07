@@ -1,0 +1,30 @@
+root@xiaobot:~/Telegram-Force-Join# sudo systemctl stop nginx
+root@xiaobot:~/Telegram-Force-Join# sudo certbot certonly --standalone -d xiaofficial.biz.id
+Saving debug log to /var/log/letsencrypt/letsencrypt.log
+Requesting a certificate for xiaofficial.biz.id
+Certbot failed to authenticate some domains (authenticator: standalone). The Certificate Authority reported these problems:
+  Identifier: xiaofficial.biz.id
+  Type:   unauthorized
+  Detail: 154.12.117.162: Invalid response from http://xiaofficial.biz.id/.well-known/acme-challenge/pySGEDuNaluRIHc3-6VGpZZxm8VFWwrpu1Q0_xF7Ru0: 404
+Hint: The Certificate Authority failed to download the challenge files from the temporary standalone webserver started by Certbot on port 80. Ensure that the listed domains point to this machine and that it can accept inbound connections from the internet.
+Some challenges have failed.
+Ask for help or search for solutions at https://community.letsencrypt.org. See the logfile /var/log/letsencrypt/letsencrypt.log or re-run Certbot with -v for more details.
+root@xiaobot:~/Telegram-Force-Join# sudo nginx -t
+sudo systemctl start nginx
+nginx: [emerg] cannot load certificate "/etc/letsencrypt/live/xiaofficial.biz.id/fullchain.pem": BIO_new_file() failed (SSL: error:80000002:system library::No such file or directory:calling fopen(/etc/letsencrypt/live/xiaofficial.biz.id/fullchain.pem, r) error:10000080:BIO routines::no such file)
+nginx: configuration file /etc/nginx/nginx.conf test failed
+Job for nginx.service failed because the control process exited with error code.
+See "systemctl status nginx.service" and "journalctl -xeu nginx.service" for details.
+root@xiaobot:~/Telegram-Force-Join# sudo systemctl start nginx
+pm2 start server/index.ts --interpreter ./node_modules/.bin/tsx --name "tg-moderator-bot"
+Job for nginx.service failed because the control process exited with error code.
+See "systemctl status nginx.service" and "journalctl -xeu nginx.service" for details.
+[PM2] Starting /root/Telegram-Force-Join/server/index.ts in fork_mode (1 instance)
+[PM2] Done.
+┌────┬────────────────────┬──────────┬──────┬───────────┬──────────┬──────────┐
+│ id │ name               │ mode     │ ↺    │ status    │ cpu      │ memory   │
+├────┼────────────────────┼──────────┼──────┼───────────┼──────────┼──────────┤
+│ 0  │ tg-moderator-bot   │ fork     │ 0    │ online    │ 0%       │ 32.0mb   │
+└────┴────────────────────┴──────────┴──────┴───────────┴──────────┴──────────┘
+root@xiaobot:~/Telegram-Force-Join#
+fter 2026-02-07 10:45:40 UTC: see https://lets
