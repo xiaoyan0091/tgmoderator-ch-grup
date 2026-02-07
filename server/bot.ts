@@ -565,11 +565,12 @@ function buildStartMenuKeyboard(userId: number, groupId?: string): TelegramBot.I
 
 function buildHelpMainKeyboard(): TelegramBot.InlineKeyboardButton[][] {
   return [
-    [{ text: "Perintah Umum", callback_data: `help_umum` }],
-    [{ text: "Perintah Moderasi", callback_data: `help_moderasi` }],
-    [{ text: "Perintah Pengaturan", callback_data: `help_pengaturan` }],
-    [{ text: "Info Pemilik Bot", callback_data: `help_pemilik` }],
-    [{ text: "Kembali", callback_data: `start_back` }],
+    [{ text: "\ud83d\udcd6 Petunjuk Konfigurasi Bot \ud83d\udcd6", callback_data: `help_konfigurasi` }],
+    [{ text: "\ud83d\udcdd Perintah Dasar", callback_data: `help_umum` },
+     { text: "Lanjutan \ud83d\udee0\ufe0f", callback_data: `help_moderasi` }],
+    [{ text: "\u2699\ufe0f Ahli", callback_data: `help_pengaturan` },
+     { text: "Panduan Pro \ud83d\ude80", callback_data: `help_pemilik` }],
+    [{ text: "\u2b05\ufe0f Kembali", callback_data: `start_back` }],
   ];
 }
 
@@ -706,7 +707,7 @@ export async function startBot() {
       if (!msg.from) return;
       await bot!.sendMessage(
         msg.chat.id,
-        `<b>Bantuan Bot Moderator</b>\n\nPilih kategori perintah di bawah:`,
+        `\u2728 <b>Selamat datang di menu panduan</b> \u2728`,
         { parse_mode: "HTML", reply_markup: { inline_keyboard: buildHelpMainKeyboard() } }
       );
     } catch (err) {
@@ -1853,8 +1854,30 @@ Pilih menu di bawah:`;
       // Help main menu
       if (data === "help_main") {
         await bot!.editMessageText(
-          `<b>Bantuan Bot Moderator</b>\n\nPilih kategori perintah di bawah:`,
+          `\u2728 <b>Selamat datang di menu panduan</b> \u2728`,
           { chat_id: chatId, message_id: msgId, parse_mode: "HTML", reply_markup: { inline_keyboard: buildHelpMainKeyboard() } }
+        );
+        await bot!.answerCallbackQuery(query.id);
+        return;
+      }
+
+      if (data === "help_konfigurasi") {
+        await bot!.editMessageText(
+          `\ud83d\udcd6 <b>Petunjuk Konfigurasi Bot</b> \ud83d\udcd6\n\n` +
+          `<b>Langkah 1:</b> Tambahkan bot ke grup sebagai admin\n` +
+          `<b>Langkah 2:</b> Ketik /setgroup di grup untuk mendaftarkan\n` +
+          `<b>Langkah 3:</b> Ketik /menu di grup untuk buka pengaturan\n` +
+          `<b>Langkah 4:</b> Atur fitur sesuai kebutuhan grup\n\n` +
+          `\ud83d\udca1 <b>Tips:</b>\n` +
+          `\u2022 Pastikan bot memiliki izin admin penuh\n` +
+          `\u2022 Gunakan /setgroup di PM untuk kelola via PM\n` +
+          `\u2022 Gunakan /start di grup untuk menu cepat\n` +
+          `\u2022 Semua pengaturan bisa diakses via tombol`,
+          { chat_id: chatId, message_id: msgId, parse_mode: "HTML", reply_markup: { inline_keyboard: [
+            [{ text: "\ud83d\udcdd Perintah Dasar", callback_data: `help_umum` },
+             { text: "Lanjutan \ud83d\udee0\ufe0f", callback_data: `help_moderasi` }],
+            [{ text: "\u2b05\ufe0f Kembali", callback_data: `help_main` }],
+          ] } }
         );
         await bot!.answerCallbackQuery(query.id);
         return;
@@ -1862,16 +1885,19 @@ Pilih menu di bawah:`;
 
       if (data === "help_umum") {
         await bot!.editMessageText(
-          `<b>Perintah Umum</b>\n\n` +
+          `\ud83d\udcdd <b>Perintah Dasar</b>\n\n` +
           `<b>/start</b> - Menu utama bot\n` +
           `<b>/help</b> - Tampilkan bantuan ini\n` +
           `<b>/menu</b> - Menu pengaturan grup (Admin)\n` +
           `<b>/rules</b> - Lihat aturan grup\n` +
-          `<b>/setgroup</b> - Daftarkan grup ke bot\n\n` +
+          `<b>/setgroup</b> - Daftarkan grup ke bot\n` +
+          `<b>/settings</b> - Lihat pengaturan saat ini\n` +
+          `<b>/stats</b> - Lihat statistik grup\n\n` +
           `<i>Semua perintah tersedia di grup maupun PM.</i>`,
           { chat_id: chatId, message_id: msgId, parse_mode: "HTML", reply_markup: { inline_keyboard: [
-            [{ text: "Moderasi", callback_data: `help_moderasi` }, { text: "Pengaturan", callback_data: `help_pengaturan` }],
-            [{ text: "Kembali", callback_data: `help_main` }],
+            [{ text: "Lanjutan \ud83d\udee0\ufe0f", callback_data: `help_moderasi` },
+             { text: "\u2699\ufe0f Ahli", callback_data: `help_pengaturan` }],
+            [{ text: "\u2b05\ufe0f Kembali", callback_data: `help_main` }],
           ] } }
         );
         await bot!.answerCallbackQuery(query.id);
@@ -1880,28 +1906,34 @@ Pilih menu di bawah:`;
 
       if (data === "help_moderasi") {
         await bot!.editMessageText(
-          `<b>Perintah Moderasi</b>\n<i>(Khusus Admin, balas pesan pengguna)</i>\n\n` +
+          `\ud83d\udee0\ufe0f <b>Perintah Lanjutan (Moderasi)</b>\n` +
+          `<i>Khusus Admin \u2022 Balas pesan pengguna</i>\n\n` +
+          `<b>\u26a0\ufe0f Peringatan:</b>\n` +
           `<b>/warn</b> [alasan] - Beri peringatan\n` +
           `<b>/unwarn</b> - Hapus semua peringatan\n` +
-          `<b>/warnings</b> - Cek jumlah peringatan\n` +
+          `<b>/warnings</b> - Cek jumlah peringatan\n\n` +
+          `<b>\ud83d\udeab Tindakan:</b>\n` +
           `<b>/ban</b> - Banned pengguna\n` +
           `<b>/unban</b> - Buka banned\n` +
           `<b>/kick</b> - Tendang pengguna\n` +
-          `<b>/mute</b> [menit] - Bisukan pengguna\n` +
-          `<b>/unmute</b> - Buka bisukan\n` +
+          `<b>/mute</b> [menit] - Bisukan\n` +
+          `<b>/unmute</b> - Buka bisukan\n\n` +
+          `<b>\ud83d\udcac Pesan:</b>\n` +
           `<b>/del</b> - Hapus pesan\n` +
           `<b>/purge</b> - Hapus banyak pesan\n` +
           `<b>/pin</b> - Sematkan pesan\n` +
-          `<b>/unpin</b> - Lepas sematan\n` +
+          `<b>/unpin</b> - Lepas sematan\n\n` +
+          `<b>\ud83d\udc51 Manajemen:</b>\n` +
           `<b>/promote</b> - Jadikan admin\n` +
           `<b>/demote</b> - Cabut admin\n` +
           `<b>/lock</b> - Kunci chat\n` +
-          `<b>/unlock</b> - Buka kunci chat\n` +
+          `<b>/unlock</b> - Buka kunci\n` +
           `<b>/slow</b> [detik] - Mode lambat\n` +
           `<b>/setTitle</b> [judul] - Ubah judul grup`,
           { chat_id: chatId, message_id: msgId, parse_mode: "HTML", reply_markup: { inline_keyboard: [
-            [{ text: "Umum", callback_data: `help_umum` }, { text: "Pengaturan", callback_data: `help_pengaturan` }],
-            [{ text: "Kembali", callback_data: `help_main` }],
+            [{ text: "\ud83d\udcdd Perintah Dasar", callback_data: `help_umum` },
+             { text: "\u2699\ufe0f Ahli", callback_data: `help_pengaturan` }],
+            [{ text: "\u2b05\ufe0f Kembali", callback_data: `help_main` }],
           ] } }
         );
         await bot!.answerCallbackQuery(query.id);
@@ -1910,19 +1942,22 @@ Pilih menu di bawah:`;
 
       if (data === "help_pengaturan") {
         await bot!.editMessageText(
-          `<b>Perintah Pengaturan</b>\n<i>(Khusus Admin)</i>\n\n` +
-          `<b>/menu</b> - Menu pengaturan lengkap (tombol)\n` +
-          `<b>/settings</b> - Lihat pengaturan saat ini\n` +
-          `<b>/stats</b> - Lihat statistik grup\n` +
+          `\u2699\ufe0f <b>Perintah Ahli (Pengaturan)</b>\n` +
+          `<i>Khusus Admin</i>\n\n` +
+          `<b>\ud83d\udc4b Sambutan:</b>\n` +
           `<b>/setwelcome</b> [pesan] - Atur sambutan\n` +
-          `<b>/setforcejoin</b> [username] - Tambah channel wajib\n` +
-          `<b>/delforcejoin</b> [username] - Hapus channel wajib\n` +
+          `Gunakan <code>{user}</code> dan <code>{group}</code>\n\n` +
+          `<b>\ud83d\udd17 Wajib Gabung:</b>\n` +
+          `<b>/setforcejoin</b> [username] - Tambah channel\n` +
+          `<b>/delforcejoin</b> [username] - Hapus channel\n\n` +
+          `<b>\ud83d\udeab Filter Kata:</b>\n` +
           `<b>/addword</b> [kata] - Tambah kata terlarang\n` +
           `<b>/delword</b> [kata] - Hapus kata terlarang\n\n` +
-          `<i>Gunakan {user} untuk nama pengguna, {group} untuk nama grup di pesan sambutan.</i>`,
+          `<i>\ud83d\udca1 Semua fitur juga bisa diatur via tombol /menu</i>`,
           { chat_id: chatId, message_id: msgId, parse_mode: "HTML", reply_markup: { inline_keyboard: [
-            [{ text: "Umum", callback_data: `help_umum` }, { text: "Moderasi", callback_data: `help_moderasi` }],
-            [{ text: "Kembali", callback_data: `help_main` }],
+            [{ text: "\ud83d\udcdd Perintah Dasar", callback_data: `help_umum` },
+             { text: "Panduan Pro \ud83d\ude80", callback_data: `help_pemilik` }],
+            [{ text: "\u2b05\ufe0f Kembali", callback_data: `help_main` }],
           ] } }
         );
         await bot!.answerCallbackQuery(query.id);
@@ -1931,16 +1966,23 @@ Pilih menu di bawah:`;
 
       if (data === "help_pemilik") {
         await bot!.editMessageText(
-          `<b>Perintah Pemilik Bot</b>\n\n` +
+          `\ud83d\ude80 <b>Panduan Pro</b>\n\n` +
+          `<b>\ud83d\udc51 Perintah Pemilik Bot:</b>\n` +
           `<b>/owner</b> - Panel pemilik bot (tombol)\n` +
           `<b>/broadcast</b> [pesan] - Kirim ke semua grup\n\n` +
-          `<b>Keterangan:</b>\n` +
-          `- Pemilik bot memiliki akses penuh tanpa batasan\n` +
-          `- Pemilik bot dikecualikan dari semua filter\n` +
-          `- Admin grup dikecualikan dari filter grup`,
+          `<b>\ud83d\udd10 Hak Akses:</b>\n` +
+          `\u2022 Pemilik bot memiliki akses penuh tanpa batasan\n` +
+          `\u2022 Pemilik bot dikecualikan dari semua filter\n` +
+          `\u2022 Admin grup dikecualikan dari filter grup\n\n` +
+          `<b>\ud83e\udd16 Fitur AI Moderasi:</b>\n` +
+          `\u2022 Deteksi ujaran kebencian otomatis\n` +
+          `\u2022 Filter kekerasan & pelecehan\n` +
+          `\u2022 Deteksi spam cerdas\n` +
+          `\u2022 Aktifkan via /menu > AI Moderasi`,
           { chat_id: chatId, message_id: msgId, parse_mode: "HTML", reply_markup: { inline_keyboard: [
-            [{ text: "Umum", callback_data: `help_umum` }, { text: "Moderasi", callback_data: `help_moderasi` }],
-            [{ text: "Kembali", callback_data: `help_main` }],
+            [{ text: "Lanjutan \ud83d\udee0\ufe0f", callback_data: `help_moderasi` },
+             { text: "\u2699\ufe0f Ahli", callback_data: `help_pengaturan` }],
+            [{ text: "\u2b05\ufe0f Kembali", callback_data: `help_main` }],
           ] } }
         );
         await bot!.answerCallbackQuery(query.id);
