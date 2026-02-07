@@ -2664,10 +2664,10 @@ Wajib Sub Diblokir: <b>${stats.forceJoinBlocked}</b>`;
     result = result.replace(/```([\s\S]*?)```/g, "<pre>$1</pre>");
     result = result.replace(/`([^`]+)`/g, "<code>$1</code>");
     result = result.replace(/\*([^*]+)\*/g, "<b>$1</b>");
-    result = result.replace(/_([^_]+)_/g, "<i>$1</i>");
+    result = result.replace(/__([^_]+)__/g, "<u>$1</u>");
+    result = result.replace(/(?<![_a-zA-Z])_([^_]+)_(?![_a-zA-Z])/g, "<i>$1</i>");
     result = result.replace(/~([^~]+)~/g, "<s>$1</s>");
     result = result.replace(/\|\|([^|]+)\|\|/g, '<span class="tg-spoiler">$1</span>');
-    result = result.replace(/__([^_]+)__/g, "<u>$1</u>");
     result = result.replace(/\[([^\]]+)\]\((?!buttonurl:\/\/)([^)]+)\)/g, '<a href="$2">$1</a>');
     return result;
   }
