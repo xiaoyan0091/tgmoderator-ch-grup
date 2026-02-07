@@ -49,6 +49,7 @@ export const groupSettings = pgTable("group_settings", {
   warnAction: text("warn_action").default("mute"),
   muteNewMembers: boolean("mute_new_members").default(false),
   muteNewMembersDuration: integer("mute_new_members_duration").default(300),
+  aiModeratorEnabled: boolean("ai_moderator_enabled").default(false),
   createdAt: timestamp("created_at").defaultNow(),
 });
 

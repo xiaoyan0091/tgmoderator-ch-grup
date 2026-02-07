@@ -20,6 +20,8 @@ A Telegram Group Moderator Bot with a web dashboard. The bot provides comprehens
 - Mute New Members - temporarily restrict new members
 - Inline Keyboard Button Menus - full admin menu with interactive buttons
 - Bot Owner Panel - broadcast, global stats, group management
+- PM Group Configuration - /setgroup command for full button-based group config via PM
+- AI Moderator - OpenAI-powered content moderation (hate speech, violence, harassment, spam detection)
 - Web Dashboard - manage all settings via browser
 
 ## Project Structure
@@ -102,6 +104,9 @@ npm run dev
 - /delforcejoin [username] - Hapus channel force join
 - /addword [kata] - Tambah kata terlarang
 - /delword [kata] - Hapus kata terlarang
+
+### Pengaturan via PM
+- /setgroup - Pengaturan grup lengkap via PM dengan tombol inline (pilih grup, toggle fitur, atur peringatan, filter, wajib gabung, statistik)
 
 ### Pemilik Bot
 - /setowner - Tetapkan pemilik bot (sekali pakai)
