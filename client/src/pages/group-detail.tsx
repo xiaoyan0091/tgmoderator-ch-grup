@@ -211,12 +211,12 @@ function SettingsTab({ chatId }: { chatId: string }) {
 
       <Card>
         <CardHeader>
-          <CardTitle className="text-base">Force Join</CardTitle>
-          <CardDescription>Require users to join channels before chatting</CardDescription>
+          <CardTitle className="text-base">Force Sub</CardTitle>
+          <CardDescription>Require users to subscribe to channels before chatting</CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
           <div className="flex items-center justify-between gap-4">
-            <Label htmlFor="force-join-enabled">Enable force join</Label>
+            <Label htmlFor="force-join-enabled">Enable force sub</Label>
             <Switch
               id="force-join-enabled"
               data-testid="switch-force-join-enabled"
@@ -497,7 +497,7 @@ function StatsTab({ chatId }: { chatId: string }) {
     { label: "Users Kicked", value: stats?.usersKicked ?? 0, icon: Users, color: "text-indigo-500" },
     { label: "Users Muted", value: stats?.usersMuted ?? 0, icon: Lock, color: "text-purple-500" },
     { label: "Spam Blocked", value: stats?.spamBlocked ?? 0, icon: ShieldAlert, color: "text-pink-500" },
-    { label: "Force Join Blocked", value: stats?.forceJoinBlocked ?? 0, icon: Lock, color: "text-cyan-500" },
+    { label: "Force Sub Blocked", value: stats?.forceJoinBlocked ?? 0, icon: Lock, color: "text-cyan-500" },
   ];
 
   if (isLoading) {

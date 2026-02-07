@@ -1,0 +1,2190 @@
+import json
+import asyncio
+import logging
+from datetime import datetime, time, timedelta
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
+import requests
+from calendar import month_name
+import pytz
+import signal
+import sys
+import os
+from functools import lru_cache
+import math
+
+# =================== CONFIG ===================
+BOT_TOKEN = "7240322775:AAHMZzD42Yb1VlBTe4WyGGvfzpd9f0yKUVo"
+OWNER_ID = 6444305696
+MEDIA_CHANNEL_ID = "@your_media_storage"  # Channel untuk storage media (opsional)
+
+# =================== SETUP ===================
+logging.basicConfig(level=logging.WARNING)
+logger = logging.getLogger(__name__)
+
+# Timezone WIB
+WIB = pytz.timezone('Asia/Jakarta')
+
+# Data storage
+jadwal_data = {
+    "harian": {"Senin":[],"Selasa":[],"Rabu":[],"Kamis":[],"Jumat":[],"Sabtu":[],"Minggu":[]},
+    "upcoming": [],
+    "channels": [],  # List channel/group untuk auto post bergiliran
+    "post_time": "06:00",
+    "auto_post_enabled": False,
+    "telegraph_token": "",
+    "telegraph_url": "",
+    "rules_text": "",  # Rules text dengan support HTML
+    "media_jadwal": {  # Media untuk setiap hari
+        "Senin": {"type": "", "url": ""},
+        "Selasa": {"type": "", "url": ""},
+        "Rabu": {"type": "", "url": ""},
+        "Kamis": {"type": "", "url": ""},
+        "Jumat": {"type": "", "url": ""},
+        "Sabtu": {"type": "", "url": ""},
+        "Minggu": {"type": "", "url": ""}
+    }
+}
+user_cooldown = {}
+last_jadwal_time = None  # Waktu terakhir jadwal dikirim
+last_rules_time = None  # Waktu terakhir rules dikirim
+
+# Global variable for application
+app = None
+
+# =================== CACHE ===================
+def get_today():
+    """Selalu ambil hari terbaru berdasarkan timezone WIB"""
+    now = datetime.now(WIB)
+    days = {
+        "Monday": "Senin",
+        "Tuesday": "Selasa",
+        "Wednesday": "Rabu",
+        "Thursday": "Kamis",
+        "Friday": "Jumat",
+        "Saturday": "Sabtu",
+        "Sunday": "Minggu"
+    }
+    english_day = now.strftime("%A")
+    return days[english_day]
+
+@lru_cache(maxsize=64)
+def cached_format_time(hour, minute):
+    """Cache format waktu"""
+    return f"{hour:02d}:{minute:02d}"
+
+# =================== TELEGRAPH FUNCTIONS ===================
+def create_telegraph_account():
+    """Buat akun Telegraph baru"""
+    try:
+        url = "https://api.telegra.ph/createAccount"
+        data = {
+            "short_name": "JadwalDonghua",
+            "author_name": "Jadwal Donghua Bot",
+            "author_url": "https://t.me/AnimeStreamingID"
+        }
+        response = requests.post(url, json=data, timeout=15)
+
+        if response.status_code == 200:
+            result = response.json()
+            if result.get('ok'):
+                return result['result']['access_token']
+    except Exception as e:
+        logger.error(f"Telegraph account creation error: {e}")
+    return None
+
+def create_telegraph_page(token, title, content):
+    """Buat/Update halaman Telegraph"""
+    try:
+        url = "https://api.telegra.ph/createPage"
+        data = {
+            "access_token": token,
+            "title": title,
+            "content": content,
+            "return_content": False
+        }
+        response = requests.post(url, json=data, timeout=15)
+
+        if response.status_code == 200:
+            result = response.json()
+            if result.get('ok'):
+                return result['result']['url']
+    except Exception as e:
+        logger.error(f"Telegraph page creation error: {e}")
+    return None
+
+def update_telegraph_page(token, path, title, content):
+    """Update halaman Telegraph yang sudah ada"""
+    try:
+        url = f"https://api.telegra.ph/editPage/{path}"
+        data = {
+            "access_token": token,
+            "title": title,
+            "content": content,
+            "return_content": False
+        }
+        response = requests.post(url, json=data, timeout=15)
+
+        if response.status_code == 200:
+            result = response.json()
+            if result.get('ok'):
+                return result['result']['url']
+    except Exception as e:
+        logger.error(f"Telegraph page update error: {e}")
+    return None
+
+def generate_telegraph_content():
+    """Generate konten Telegraph pakai HTML tags terstruktur"""
+    now = datetime.now(WIB)
+    today = get_today()
+
+    bulan_indo = {
+        1: "Januari", 2: "Februari", 3: "Maret", 4: "April", 5: "Mei", 6: "Juni",
+        7: "Juli", 8: "Agustus", 9: "September", 10: "Oktober", 11: "November", 12: "Desember"
+    }
+
+    date = now.day
+    month = bulan_indo[now.month]
+    year = now.year
+    update_time = now.strftime("%H:%M")
+
+    content = []
+
+    # Header dengan HTML br
+    content.append({
+        "tag": "p",
+        "children": [f"Pembaruan pada {today}, {date} {month} {year} pukul {update_time} WIB"]
+    })
+
+    # BR tags untuk spasi
+    content.append({"tag": "br"})
+    content.append({"tag": "br"})
+
+    for hari in ["Senin", "Selasa", "Rabu", "Kamis", "Jumat", "Sabtu", "Minggu"]:
+        if jadwal_data["harian"][hari]:
+            # Nama hari
+            content.append({
+                "tag": "p",
+                "children": [{"tag": "strong", "children": [hari]}]
+            })
+
+            # List anime
+            for i, anime in enumerate(jadwal_data["harian"][hari], 1):
+                if isinstance(anime, dict):
+                    # Anime dengan link
+                    content.append({
+                        "tag": "p",
+                        "children": [
+                            f"   {i}. ",
+                            {"tag": "a", "attrs": {"href": anime["link"]}, "children": [anime["judul"]]}
+                        ]
+                    })
+                else:
+                    # Anime tanpa link (string biasa)
+                    content.append({
+                        "tag": "p",
+                        "children": [f"   {i}. {anime}"]
+                    })
+
+            # Spasi antar hari - double BR
+            content.append({"tag": "br"})
+            content.append({"tag": "br"})
+
+    return content
+
+def update_telegraph():
+    """Update halaman Telegraph dengan jadwal terbaru"""
+    if not jadwal_data.get("telegraph_token"):
+        return False
+
+    title = "Jadwal Donghua CA3D "
+    content = generate_telegraph_content()
+
+    if jadwal_data.get("telegraph_url"):
+        # Update existing page
+        try:
+            path = jadwal_data["telegraph_url"].split("/")[-1]
+            url = update_telegraph_page(jadwal_data["telegraph_token"], path, title, content)
+            if url:
+                jadwal_data["telegraph_url"] = url
+                save_data()
+                return True
+        except Exception as e:
+            logger.error(f"Telegraph update error: {e}")
+
+    # Create new page jika update gagal
+    url = create_telegraph_page(jadwal_data["telegraph_token"], title, content)
+    if url:
+        jadwal_data["telegraph_url"] = url
+        save_data()
+        return True
+
+    return False
+
+# =================== FUNGSI HELPER ===================
+def save_data():
+    try:
+        with open("jadwal.json", "w", encoding="utf-8") as f:
+            json.dump(jadwal_data, f, indent=2, ensure_ascii=False)
+    except Exception as e:
+        logger.error(f"Save data error: {e}")
+
+def load_data():
+    global jadwal_data
+    try:
+        with open("jadwal.json", "r", encoding="utf-8") as f:
+            loaded = json.load(f)
+            jadwal_data.update(loaded)
+            # Migrate old channel_id to channels list
+            if "channel_id" in jadwal_data and jadwal_data["channel_id"] and jadwal_data["channel_id"] not in jadwal_data.get("channels", []):
+                if not jadwal_data.get("channels"):
+                    jadwal_data["channels"] = []
+                jadwal_data["channels"].append(jadwal_data["channel_id"])
+                del jadwal_data["channel_id"]
+                save_data()
+            # Migrate old foto/video to media_jadwal
+            if "jadwal_foto" in jadwal_data or "jadwal_video" in jadwal_data:
+                if not jadwal_data.get("media_jadwal"):
+                    jadwal_data["media_jadwal"] = {
+                        "Senin": {"type": "", "url": ""},
+                        "Selasa": {"type": "", "url": ""},
+                        "Rabu": {"type": "", "url": ""},
+                        "Kamis": {"type": "", "url": ""},
+                        "Jumat": {"type": "", "url": ""},
+                        "Sabtu": {"type": "", "url": ""},
+                        "Minggu": {"type": "", "url": ""}
+                    }
+                # Hapus old fields
+                if "jadwal_foto" in jadwal_data:
+                    del jadwal_data["jadwal_foto"]
+                if "jadwal_video" in jadwal_data:
+                    del jadwal_data["jadwal_video"]
+                save_data()
+            # Ensure all fields exist
+            if "rules_text" not in jadwal_data:
+                jadwal_data["rules_text"] = ""
+            if "media_jadwal" not in jadwal_data:
+                jadwal_data["media_jadwal"] = {
+                    "Senin": {"type": "", "url": ""},
+                    "Selasa": {"type": "", "url": ""},
+                    "Rabu": {"type": "", "url": ""},
+                    "Kamis": {"type": "", "url": ""},
+                    "Jumat": {"type": "", "url": ""},
+                    "Sabtu": {"type": "", "url": ""},
+                    "Minggu": {"type": "", "url": ""}
+                }
+            save_data()
+    except Exception as e:
+        logger.error(f"Load data error: {e}")
+        save_data()
+
+def get_media_for_today():
+    """Ambil media untuk hari ini"""
+    today = get_today()
+    return jadwal_data.get("media_jadwal", {}).get(today, {"type": "", "url": ""})
+
+def format_jadwal_hari_ini():
+    """Format jadwal PERSIS seperti di foto contoh"""
+    today = get_today()
+
+    # Header dengan format persis seperti foto
+    msg = f"<b>Jadwal Donghua Hari Ini :</b>\n"
+
+    # Jadwal harian
+    if jadwal_data["harian"][today]:
+        for i, anime in enumerate(jadwal_data["harian"][today], 1):
+            if isinstance(anime, dict):
+                # Anime dengan link - tampilkan sebagai hyperlink
+                msg += f"  {i}. <a href=\"{anime['link']}\">{anime['judul']}</a>\n"
+            else:
+                # Anime tanpa link
+                msg += f"  {i}. {anime}\n"
+    else:
+        msg += "❌ <i>Tidak ada jadwal donghua hari ini dalam waktu dekat</i>\n"
+
+    # Upcoming section dengan format blockquote seperti di foto
+    msg += "\n<b>Upcoming Donghua :\n</b>"
+
+    if jadwal_data["upcoming"]:
+        for i, up in enumerate(jadwal_data["upcoming"], 1):
+            # Format blockquote hijau seperti di foto dengan format yang diperbaiki
+            msg += f'<blockquote>{i}. <b>{up["judul"]}</b>'
+            if up.get("season"):
+                msg += f'[Season {up["season"]}]'
+
+            # Cek apakah ada link atau tidak
+            if up.get("link"):
+                msg += f'\n({up["hari"]}, {up["tanggal"]}) (<a href="{up["link"]}">PV</a>)</blockquote>\n'
+            else:
+                msg += f'\n({up["hari"]}, {up["tanggal"]})</blockquote>\n'
+    else:
+        msg += "<blockquote>Belum ada donghua dalam waktu dekat</blockquote>\n\n"
+
+    # Footer dengan link Telegraph
+    if jadwal_data.get("telegraph_url"):
+        msg += f'<a href="{jadwal_data["telegraph_url"]}"><b>Jadwal Donghua Semua Hari</b></a>\n#botjadwal'
+    else:
+        msg += "<b>Jadwal Donghua Semua Hari</b>\n#botjadwal"
+
+    return msg
+
+def format_jadwal_lengkap():
+    """Format jadwal lengkap untuk command /jadwal"""
+    today = get_today()
+
+    # Header
+    msg = f"<b>Jadwal Donghua Hari Ini :</b>\n"
+
+    # Jadwal hari ini
+    if jadwal_data["harian"][today]:
+        for i, anime in enumerate(jadwal_data["harian"][today], 1):
+            if isinstance(anime, dict):
+                # Anime dengan link - tampilkan sebagai hyperlink
+                msg += f" {i}. <a href=\"{anime['link']}\">{anime['judul']}</a>\n"
+            else:
+                # Anime tanpa link
+                msg += f" {i}. {anime}\n"
+    else:
+        msg += "Tidak ada jadwal hari ini\n"
+
+    # Upcoming section
+    msg += "\n<b>Upcoming Donghua :\n</b>"
+
+    if jadwal_data["upcoming"]:
+        for i, up in enumerate(jadwal_data["upcoming"], 1):
+            msg += f'<blockquote>{i}. <b>{up["judul"]}</b>'
+            if up.get("season"):
+                msg += f'[Season {up["season"]}]'
+
+            # Cek apakah ada link atau tidak
+            if up.get("link"):
+                msg += f'\n({up["hari"]}, {up["tanggal"]}) (<a href="{up["link"]}">PV</a>)</blockquote>\n'
+            else:
+                msg += f'\n({up["hari"]}, {up["tanggal"]})</blockquote>\n'
+    else:
+        msg += "<blockquote> Belum ada donghua dalam waktu dekat </blockquote>\n\n"
+
+    # Footer dengan link Telegraph
+    if jadwal_data.get("telegraph_url"):
+        msg += f'<a href="{jadwal_data["telegraph_url"]}"><b>Jadwal Donghua Semua Hari</b></a>\n#botjadwal'
+    else:
+        msg += "<b>Jadwal Donghua Semua Hari</b>\n#botjadwal"
+
+    return msg
+
+def format_rules_message():
+    """Format pesan rules dengan hashtag"""
+    if not jadwal_data.get("rules_text"):
+        return "❌ <i>Rules belum diset oleh admin</i>\n\n#rulesbot"
+
+    return f"{jadwal_data['rules_text']}\n\n#rulesbot"
+
+async def send_jadwal_with_media(chat_id, context, message_text):
+    """Send jadwal dengan foto/video/GIF sesuai hari"""
+    try:
+        # Ambil media untuk hari ini
+        today_media = get_media_for_today()
+
+        if today_media["url"] and today_media["type"]:
+            if today_media["type"] == "video":
+                # Send as video/animation
+                await context.bot.send_video(
+                    chat_id=chat_id,
+                    video=today_media["url"],
+                    caption=message_text,
+                    parse_mode='HTML',
+                    has_spoiler=False
+                )
+            elif today_media["type"] == "photo":
+                # Send as photo
+                await context.bot.send_photo(
+                    chat_id=chat_id,
+                    photo=today_media["url"],
+                    caption=message_text,
+                    parse_mode='HTML'
+                )
+        else:
+            # Send as text only
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=message_text,
+                parse_mode='HTML',
+                disable_web_page_preview=True
+            )
+    except Exception as e:
+        logger.error(f"Send media error: {e}")
+        # Fallback to text
+        try:
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=message_text,
+                parse_mode='HTML',
+                disable_web_page_preview=True
+            )
+        except Exception as fallback_error:
+            logger.error(f"Send text fallback error: {fallback_error}")
+
+# =================== PAGINATION FUNCTIONS ===================
+def get_all_schedule_items():
+    """Dapatkan semua item jadwal (harian + upcoming) dengan indexing"""
+    items = []
+
+    # Jadwal harian
+    for hari in ["Senin","Selasa","Rabu","Kamis","Jumat","Sabtu","Minggu"]:
+        for anime in jadwal_data["harian"][hari]:
+            if isinstance(anime, dict):
+                display_text = f"{anime['judul']} ({hari})"
+                items.append({
+                    'type': 'harian',
+                    'text': display_text,
+                    'hari': hari,
+                    'anime': anime,
+                    'hash': hash(anime['judul']) % 1000
+                })
+            else:
+                items.append({
+                    'type': 'harian',
+                    'text': f"{anime} ({hari})",
+                    'hari': hari,
+                    'anime': anime,
+                    'hash': hash(anime) % 1000
+                })
+
+    # Upcoming
+    for i, up in enumerate(jadwal_data["upcoming"]):
+        items.append({
+            'type': 'upcoming',
+            'text': f"{up['judul']} (Upcoming)",
+            'index': i,
+            'data': up
+        })
+
+    return items
+
+def generate_delete_keyboard(page=1, items_per_page=10):
+    """Generate keyboard dengan pagination 2 kolom, 5 baris"""
+    all_items = get_all_schedule_items()
+    total_items = len(all_items)
+    total_pages = math.ceil(total_items / items_per_page)
+
+    if total_pages == 0:
+        return [[InlineKeyboardButton("Belum ada jadwal", callback_data="back")], [InlineKeyboardButton("Kembali", callback_data="back")]]
+
+    # Pastikan page dalam range
+    page = max(1, min(page, total_pages))
+
+    start_index = (page - 1) * items_per_page
+    end_index = min(start_index + items_per_page, total_items)
+    current_items = all_items[start_index:end_index]
+
+    keyboard = []
+
+    # Items dalam 2 kolom, maksimal 5 baris (10 items per halaman)
+    for i in range(0, len(current_items), 2):
+        row = []
+        for j in range(2):
+            if i + j < len(current_items):
+                item = current_items[i + j]
+                # Truncate text jika terlalu panjang
+                display_text = item['text'][:20] + "..." if len(item['text']) > 20 else item['text']
+
+                if item['type'] == 'harian':
+                    callback_data = f"del_h_{item['hari']}_{item['hash']}"
+                else:
+                    callback_data = f"del_u_{item['index']}"
+
+                row.append(InlineKeyboardButton(f"❌ {display_text}", callback_data=callback_data))
+
+        if row:
+            keyboard.append(row)
+
+    # Pagination controls jika lebih dari 1 halaman
+    if total_pages > 1:
+        pagination_row = []
+
+        # Previous button
+        if page > 1:
+            pagination_row.append(InlineKeyboardButton("◀️", callback_data=f"del_page_{page-1}"))
+
+        # Page numbers (maksimal 5 angka)
+        start_page = max(1, page - 2)
+        end_page = min(total_pages, start_page + 4)
+
+        # Adjust start_page jika end_page sudah maksimal
+        if end_page - start_page < 4:
+            start_page = max(1, end_page - 4)
+
+        for p in range(start_page, end_page + 1):
+            if p == page:
+                pagination_row.append(InlineKeyboardButton(f"• {p} •", callback_data=f"del_page_{p}"))
+            else:
+                pagination_row.append(InlineKeyboardButton(str(p), callback_data=f"del_page_{p}"))
+
+        # Next button
+        if page < total_pages:
+            pagination_row.append(InlineKeyboardButton("▶️", callback_data=f"del_page_{page+1}"))
+
+        keyboard.append(pagination_row)
+
+    # Kembali button
+    keyboard.append([InlineKeyboardButton("Kembali", callback_data="back")])
+
+    return keyboard
+
+# =================== COMMAND HANDLERS ===================
+async def jadwal_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global last_jadwal_time
+    user_id = update.effective_user.id
+    chat_id = update.effective_chat.id
+    now = datetime.now(WIB)
+
+    # Hanya OWNER yang bisa di PM bot
+    if chat_id > 0 and user_id != OWNER_ID:  # chat_id > 0 = private chat
+        return
+
+    # Owner tidak perlu anti spam
+    if user_id != OWNER_ID:
+        # Cek anti spam 20 menit
+        if last_jadwal_time:
+            time_diff = now - last_jadwal_time
+            if time_diff < timedelta(minutes=20):
+                minutes_ago = int(time_diff.total_seconds() / 60)
+                minutes_left = 20 - minutes_ago
+
+                anti_spam_msg = f"""Anti Spam!
+Command Jadwal dapat diakses {minutes_left} menit lagi. Jadwal sudah pernah dikirim {minutes_ago} menit yang lalu, tekan hashtag
+#botjadwal"""
+
+                # Tunggu 2 detik lalu hapus pesan command
+                await asyncio.sleep(2)
+                try:
+                    await update.message.delete()
+                except Exception as e:
+                    logger.error(f"Delete message error: {e}")
+
+                # Kirim pesan anti spam
+                spam_msg = await update.effective_chat.send_message(anti_spam_msg)
+
+                # Hapus pesan anti spam setelah 5 detik
+                await asyncio.sleep(5)
+                try:
+                    await spam_msg.delete()
+                except Exception as e:
+                    logger.error(f"Delete spam message error: {e}")
+
+                return
+
+    # Rate limit 5 per menit
+    if user_id in user_cooldown:
+        if len([t for t in user_cooldown[user_id] if (now-t).seconds < 60]) >= 5:
+            return
+        user_cooldown[user_id].append(now)
+    else:
+        user_cooldown[user_id] = [now]
+
+    # Tunggu 2 detik lalu hapus pesan command (hanya di group)
+    if chat_id < 0:  # Group chat
+        await asyncio.sleep(2)
+        try:
+            await update.message.delete()
+        except Exception as e:
+            logger.error(f"Delete message error: {e}")
+
+    # Update waktu terakhir jadwal dikirim
+    last_jadwal_time = now
+
+    # Kirim jadwal dengan foto/video
+    try:
+        message_text = format_jadwal_lengkap()
+        await send_jadwal_with_media(chat_id, context, message_text)
+    except Exception as e:
+        logger.error(f"Send jadwal error: {e}")
+
+async def rules_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global last_rules_time
+    user_id = update.effective_user.id
+    chat_id = update.effective_chat.id
+    now = datetime.now(WIB)
+
+    # Hanya OWNER yang bisa di PM bot
+    if chat_id > 0 and user_id != OWNER_ID:  # chat_id > 0 = private chat
+        return
+
+    # Owner tidak perlu anti spam
+    if user_id != OWNER_ID:
+        # Cek anti spam 20 menit
+        if last_rules_time:
+            time_diff = now - last_rules_time
+            if time_diff < timedelta(minutes=20):
+                minutes_ago = int(time_diff.total_seconds() / 60)
+                minutes_left = 20 - minutes_ago
+
+                anti_spam_msg = f"""Anti Spam!
+Command Rules dapat diakses {minutes_left} menit lagi. Rules sudah pernah dikirim {minutes_ago} menit yang lalu, tekan hashtag
+#rulesbot"""
+
+                # Tunggu 2 detik lalu hapus pesan command
+                await asyncio.sleep(2)
+                try:
+                    await update.message.delete()
+                except Exception as e:
+                    logger.error(f"Delete message error: {e}")
+
+                # Kirim pesan anti spam
+                spam_msg = await update.effective_chat.send_message(anti_spam_msg)
+
+                # Hapus pesan anti spam setelah 5 detik
+                await asyncio.sleep(5)
+                try:
+                    await spam_msg.delete()
+                except Exception as e:
+                    logger.error(f"Delete spam message error: {e}")
+
+                return
+
+    # Rate limit 5 per menit
+    if user_id in user_cooldown:
+        if len([t for t in user_cooldown[user_id] if (now-t).seconds < 60]) >= 5:
+            return
+        user_cooldown[user_id].append(now)
+    else:
+        user_cooldown[user_id] = [now]
+
+    # Tunggu 2 detik lalu hapus pesan command (hanya di group)
+    if chat_id < 0:  # Group chat
+        await asyncio.sleep(2)
+        try:
+            await update.message.delete()
+        except Exception as e:
+            logger.error(f"Delete message error: {e}")
+
+    # Update waktu terakhir rules dikirim
+    last_rules_time = now
+
+    # Kirim rules
+    try:
+        rules_msg = await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text=format_rules_message(),
+            parse_mode='HTML',
+            disable_web_page_preview=True
+        )
+
+        # Hapus pesan rules setelah 10 detik (hanya di group)
+        if chat_id < 0:  # Group chat
+            await asyncio.sleep(10)
+            try:
+                await rules_msg.delete()
+            except Exception as e:
+                logger.error(f"Delete rules message error: {e}")
+
+    except Exception as e:
+        logger.error(f"Send rules message error: {e}")
+
+async def panel_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != OWNER_ID:
+        await update.message.reply_text("⛔ Akses ditolak!")
+        return
+
+    channels_info = f"{len(jadwal_data['channels'])} channel/group" if jadwal_data["channels"] else "❌ Belum diset"
+    time_info = jadwal_data["post_time"]
+    auto_status = "🟢 AKTIF" if jadwal_data["auto_post_enabled"] else "🔴 NONAKTIF"
+    telegraph_status = "🟢 AKTIF" if jadwal_data.get("telegraph_token") else "🔴 NONAKTIF"
+    rules_status = "🟢 SUDAH DISET" if jadwal_data.get("rules_text") else "🔴 BELUM DISET"
+
+    # Hitung media status
+    media_count = sum(1 for hari in jadwal_data["media_jadwal"] if jadwal_data["media_jadwal"][hari]["url"])
+    media_status = f"🟢 {media_count}/7 HARI" if media_count > 0 else "🔴 BELUM DISET"
+
+    today = get_today()
+    jadwal_hari_ini = len(jadwal_data["harian"][today])
+    total_minggu = sum(len(jadwal_data["harian"][hari]) for hari in jadwal_data["harian"])
+
+    keyboard = [
+        [InlineKeyboardButton("Tambah Jadwal", callback_data="tambah"),
+         InlineKeyboardButton("Hapus Jadwal", callback_data="hapus")],
+        [InlineKeyboardButton("Lihat Semua", callback_data="lihat"),
+         InlineKeyboardButton("Preview Hari Ini", callback_data="preview")],
+        [InlineKeyboardButton("Kelola Channel", callback_data="manage_channels"),
+         InlineKeyboardButton("Set Jam Post", callback_data="set_time")],
+        [InlineKeyboardButton("Setup Telegraph", callback_data="setup_telegraph"),
+         InlineKeyboardButton("Toggle Auto Post", callback_data="toggle_auto")],
+        [InlineKeyboardButton("Set Rules", callback_data="set_rules"),
+         InlineKeyboardButton("Preview Rules", callback_data="preview_rules")],
+        [InlineKeyboardButton("Set Media Jadwal", callback_data="set_media")]
+    ]
+
+    next_post = "Tidak ada" if not jadwal_data["auto_post_enabled"] else f"Bergiliran setiap hari jam {jadwal_data['post_time']}"
+
+    msg = f"""<b>🎬 PANEL ADMIN JADWAL DONGHUA</b>
+
+<b>📊 Status Sistem:</b>
+📅 Hari ini: <b>{today}</b>
+📝 Jadwal hari ini: <b>{jadwal_hari_ini} anime</b>
+📈 Total minggu ini: <b>{total_minggu} anime</b>
+📺 Channel/Group: <b>{channels_info}</b>
+⏰ Jam auto post: <b>{time_info} WIB</b>
+🤖 Status: <b>{auto_status}</b>
+📰 Telegraph: <b>{telegraph_status}</b>
+📜 Rules: <b>{rules_status}</b>
+🎨 Media Jadwal: <b>{media_status}</b>
+⏭️ Posting: <b>{next_post}</b>"""
+
+    try:
+        await update.message.reply_text(
+            msg,
+            parse_mode='HTML',
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+    except Exception as e:
+        logger.error(f"Panel message error: {e}")
+
+# =================== CALLBACK HANDLERS ===================
+async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    if query.from_user.id != OWNER_ID:
+        await query.edit_message_text("⛔ Akses ditolak!")
+        return
+
+    data = query.data
+
+    if data == "set_media":
+        keyboard = []
+
+        # Buat button dalam 2 kolom untuk hari-hari
+        days = [
+            ("Senin", ""), ("Selasa", ""),
+            ("Rabu", ""), ("Kamis", ""),
+            ("Jumat", ""), ("Sabtu", ""),
+            ("Minggu", "")
+        ]
+
+        # Susun button 2x2 untuk hari (2 kolom per baris)
+        for i in range(0, len(days), 2):
+            row = []
+            for j in range(2):
+                if i + j < len(days):
+                    hari, emoji = days[i + j]
+                    media_info = jadwal_data["media_jadwal"][hari]
+                    if media_info["url"]:
+                        status = "📸" if media_info["type"] == "photo" else "🎬"
+                    else:
+                        status = " "
+
+                    row.append(InlineKeyboardButton(
+                        f"{emoji} {hari} - {status}",
+                        callback_data=f"media_{hari}"
+                    ))
+            keyboard.append(row)
+
+        # Button kembali
+        keyboard.append([InlineKeyboardButton("🔙 Kembali", callback_data="back")])
+
+        await query.edit_message_text(
+            "<b>🎨 SET MEDIA JADWAL</b>\n\n"
+            "Pilih hari untuk mengatur media jadwal:\n\n"
+            "<b>📝 Fitur Media Jadwal:</b>\n"
+            "• Support foto, video, dan GIF\n"
+            "• Setiap hari bisa berbeda media\n"
+            "• Auto digunakan saat posting jadwal\n"
+            "• Caption berisi jadwal lengkap\n\n"
+            "<i>💡 Klik hari untuk mengatur media!</i>",
+            parse_mode='HTML',
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+
+    elif data.startswith("media_"):
+        hari = data.replace("media_", "")
+        media_info = jadwal_data["media_jadwal"][hari]
+
+        keyboard = [
+            [InlineKeyboardButton("Upload Media", callback_data=f"upload_{hari}")],
+        ]
+
+        if media_info["url"]:
+            keyboard.append([InlineKeyboardButton("Hapus Media", callback_data=f"delete_{hari}")])
+
+        keyboard.append([InlineKeyboardButton("Kembali", callback_data="set_media")])
+
+        status_text = ""
+        if media_info["url"]:
+            media_type = "Foto" if media_info["type"] == "photo" else "Video/GIF"
+            status_text = f"\n\n<b>📸 Media Saat Ini:</b>\n🎨 <b>Type:</b> {media_type}\n🔗 <b>URL:</b> <code>{media_info['url'][:100]}</code>"
+        else:
+            status_text = "\n\n❌ <b>Belum ada media untuk hari ini</b>"
+
+        await query.edit_message_text(
+            f"<b>🎨 MEDIA JADWAL - {hari.upper()}</b>{status_text}\n\n"
+            "<b>📝 Cara Upload:</b>\n"
+            "• Klik 'Upload Media'\n"
+            "• Kirim foto, video, atau GIF\n"
+            "• Bot akan otomatis detect type\n\n"
+            f"<i>💡 Media ini akan digunakan saat posting jadwal hari {hari}!</i>",
+            parse_mode='HTML',
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+
+    elif data.startswith("upload_"):
+        hari = data.replace("upload_", "")
+
+        await query.edit_message_text(
+            f"<b>📤 UPLOAD MEDIA - {hari.upper()}</b>\n\n"
+            "Kirim media untuk hari ini:\n\n"
+            "<b>📸 Support Format:</b>\n"
+            "• Foto: JPG, PNG, WEBP\n"
+            "• Video: MP4, MOV, AVI\n"
+            "• GIF: Animated GIF\n\n"
+            "<b>📝 Cara Upload:</b>\n"
+            "1️⃣ Kirim foto/video/GIF langsung\n"
+            "2️⃣ Atau forward dari chat lain\n"
+            "3️⃣ Bot akan otomatis simpan\n\n"
+            "<b>🔗 Atau kirim URL media:</b>\n"
+            "<code>https://example.com/media.jpg</code>\n\n"
+            "<i>💡 Media akan otomatis terdetect type nya!</i>",
+            parse_mode='HTML',
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Kembali", callback_data=f"media_{hari}")]])
+        )
+        context.user_data['waiting_media'] = hari
+    elif data.startswith("delete_"):
+        hari = data.replace("delete_", "")
+
+        jadwal_data["media_jadwal"][hari] = {"type": "", "url": ""}
+        save_data()
+
+        await query.edit_message_text(
+            f"<b>✅ MEDIA {hari.upper()} BERHASIL DIHAPUS!</b>\n\n"
+            f"🗑️ <b>Status:</b> Media untuk hari {hari} telah dihapus\n"
+            f"📝 <b>Mode:</b> Text only untuk hari {hari}\n\n"
+            f"<i>💡 Jadwal hari {hari} sekarang akan dikirim tanpa media!</i>",
+            parse_mode='HTML',
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Kembali", callback_data="set_media")]])
+        )
+
+    elif data == "set_rules":
+        await query.edit_message_text(
+            "<b>📜 SET RULES GROUP</b>\n\n"
+            "Kirim teks rules yang akan ditampilkan saat user ketik <code>/rules</code>\n\n"
+            "<b>✨ Support HTML Tags:</b>\n"
+            "• <code>&lt;b&gt;Bold&lt;/b&gt;</code> → <b>Bold</b>\n"
+            "• <code>&lt;i&gt;Italic&lt;/i&gt;</code> → <i>Italic</i>\n"
+            "• <code>&lt;u&gt;Underline&lt;/u&gt;</code> → <u>Underline</u>\n"
+            "• <code>&lt;s&gt;Strike&lt;/s&gt;</code> → <s>Strike</s>\n"
+            "• <code>&lt;code&gt;Code&lt;/code&gt;</code> → <code>Code</code>\n"
+            "• <code>&lt;a href=\"link\"&gt;Text&lt;/a&gt;</code> → Link\n"
+            "• <code>&lt;blockquote&gt;Quote&lt;/blockquote&gt;</code> → Quote\n\n"
+            "<b>📝 Contoh Rules:</b>\n"
+            "<code>&lt;b&gt;📜 RULES GRUP&lt;/b&gt;\n\n"
+            "1. &lt;b&gt;Dilarang spam&lt;/b&gt;\n"
+            "2. &lt;i&gt;Sopan dan santun&lt;/i&gt;\n"
+            "3. &lt;u&gt;No 18+ content&lt;/u&gt;</code>\n\n"
+            "<i>💡 Rules akan otomatis terhapus setelah 10 detik!</i>\n"
+            "<i>🔒 Sistem anti spam 20 menit seperti jadwal!</i>",
+            parse_mode='HTML',
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Kembali", callback_data="back")]])
+        )
+        context.user_data['waiting_input'] = 'set_rules'
+
+    elif data == "preview_rules":
+        if jadwal_data.get("rules_text"):
+            await query.edit_message_text(
+                f"<b>👀 PREVIEW RULES</b>\n\n"
+                f"<i>Ini yang akan tampil saat user ketik /rules:</i>\n\n"
+                f"<blockquote >{format_rules_message()}</blockquote>\n\n"
+                f"<i>💡 Rules akan otomatis terhapus setelah 10 detik!</i>",
+                parse_mode='HTML',
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Kembali", callback_data="back")]])
+            )
+        else:
+            await query.edit_message_text(
+                "<b>📜 PREVIEW RULES</b>\n\n"
+                "❌ <b>Rules belum diset!</b>\n\n"
+                "Klik 'Set Rules' untuk mengatur rules group.",
+                parse_mode='HTML',
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("Set Rules", callback_data="set_rules")],
+                    [InlineKeyboardButton("Kembali", callback_data="back")]
+                ])
+            )
+
+    elif data == "manage_channels":
+        if jadwal_data["channels"]:
+            keyboard = []
+            for i, channel in enumerate(jadwal_data["channels"]):
+                keyboard.append([InlineKeyboardButton(f"❌ {channel}", callback_data=f"del_ch_{i}")])
+
+            keyboard.append([InlineKeyboardButton("Tambah Channel/Group", callback_data="add_channel")])
+            keyboard.append([InlineKeyboardButton("Kembali", callback_data="back")])
+
+            await query.edit_message_text(
+                f"<b>📺 KELOLA CHANNEL/GROUP ({len(jadwal_data['channels'])})</b>\n\n"
+                f"<b>✅ Terdaftar:</b>\n" +
+                "\n".join([f"  {i+1}. <code>{ch}</code>" for i, ch in enumerate(jadwal_data["channels"])]) +
+                f"\n\n<i>💡 Auto post akan bergiliran ke semua channel/group setiap 1 menit!</i>",
+                parse_mode='HTML',
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+        else:
+            await query.edit_message_text(
+                "<b>📺 KELOLA CHANNEL/GROUP</b>\n\n"
+                "❌ Belum ada channel/group terdaftar</b>\n\n"
+                "<i>💡 Tambahkan channel/group untuk auto posting bergiliran!</i>",
+                parse_mode='HTML',
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("Tambah Channel/Group", callback_data="add_channel")],
+                    [InlineKeyboardButton("Kembali", callback_data="back")]
+                ])
+            )
+
+    elif data == "add_channel":
+        await query.edit_message_text(
+            "<b>📺 TAMBAH CHANNEL/GROUP UNTUK AUTO POST</b>\n\n"
+            "Kirim <b>Chat ID</b> channel atau group:\n\n"
+            "<b>Format:</b> <code>-1001234567890</code>\n\n"
+            "<b>🔍 Cara mendapatkan Chat ID:</b>\n"
+            "1️⃣ Forward pesan dari channel ke @userinfobot\n"
+            "2️⃣ Atau add @MissRose_bot ke channel → ketik /id\n"
+            "3️⃣ Salin angka yang dimulai dengan -100\n\n"
+            "<b>⚠️ Support channel DAN group!</b>\n"
+            "• Bot harus jadi admin di channel/group\n"
+            "• Bot harus punya permission 'Send Messages'\n\n"
+            "<b>🔄 Auto Post Bergiliran:</b>\n"
+            "• Jam 20:00 → Post ke channel/group pertama\n"
+            "• Jam 20:01 → Post ke channel/group kedua\n"
+            "• Jam 20:02 → Post ke channel/group ketiga\n"
+            "• Dan seterusnya setiap 1 menit!\n\n",
+            parse_mode='HTML',
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Kembali", callback_data="manage_channels")]])
+        )
+        context.user_data['waiting_input'] = 'add_channel'
+
+    elif data.startswith("del_ch_"):
+        try:
+            idx = int(data.replace("del_ch_", ""))
+            if 0 <= idx < len(jadwal_data["channels"]):
+                deleted_channel = jadwal_data["channels"].pop(idx)
+                save_data()
+                await query.answer(f"✅ {deleted_channel} dihapus!")
+            else:
+                await query.answer("❌ Channel tidak ditemukan!")
+        except Exception as e:
+            logger.error(f"Delete channel error: {e}")
+            await query.answer("❌ Error menghapus!")
+
+        # Kembali ke manage channels
+        if jadwal_data["channels"]:
+            keyboard = []
+            for i, channel in enumerate(jadwal_data["channels"]):
+                keyboard.append([InlineKeyboardButton(f"❌ {channel}", callback_data=f"del_ch_{i}")])
+
+            keyboard.append([InlineKeyboardButton("Tambah Channel/Group", callback_data="add_channel")])
+            keyboard.append([InlineKeyboardButton("Kembali", callback_data="back")])
+            await query.edit_message_text(
+                f"<b>📺 KELOLA CHANNEL/GROUP ({len(jadwal_data['channels'])})</b>\n\n"
+                f"<b>✅ Terdaftar:</b>\n" +
+                "\n".join([f"  {i+1}. <code>{ch}</code>" for i, ch in enumerate(jadwal_data["channels"])]) +
+                f"\n\n<i>💡 Auto post akan bergiliran ke semua channel/group setiap 1 menit!</i>",
+                parse_mode='HTML',
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+        else:
+            await query.edit_message_text(
+                "<b>📺 KELOLA CHANNEL/GROUP</b>\n\n"
+                "<b>❌ Belum ada channel/group terdaftar</b>\n\n"
+                "<i>💡 Tambahkan channel/group untuk auto posting bergiliran!</i>",
+                parse_mode='HTML',
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("Tambah Channel/Group", callback_data="add_channel")],
+                    [InlineKeyboardButton("Kembali", callback_data="back")]
+                ])
+            )
+
+    elif data == "setup_telegraph":
+        if jadwal_data.get("telegraph_token"):
+            # Sudah ada token, tampilkan status
+            telegraph_info = jadwal_data.get("telegraph_url", "Belum ada halaman")
+            await query.edit_message_text(
+                "<b>📰 STATUS TELEGRAPH</b>\n\n"
+                f"🔑 <b>Token:</b> Tersedia ✅\n"
+                f"📄 <b>Halaman:</b> <a href='{telegraph_info}'>Lihat</a>\n\n"
+                "<i>Silahkan pilih tombol di bawah ini:</i>",
+                parse_mode='HTML',
+                disable_web_page_preview=True,
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("Update Manual", callback_data="update_telegraph")],
+                    [InlineKeyboardButton("Buat Token Baru", callback_data="create_telegraph")],
+                    [InlineKeyboardButton("Kembali", callback_data="back")]
+                ])
+            )
+        else:
+            # Belum ada token
+            await query.edit_message_text(
+                "<b>📰 SETUP TELEGRAPH</b>\n\n"
+                "Telegraph diperlukan untuk halaman 'Jadwal Donghua Semua Hari'\n\n"
+                "<b>✨ Fitur Telegraph:</b>\n"
+                "• Link di footer jadwal\n"
+                "• Auto update saat tambah jadwal\n"
+                "• Format seperti contoh yang diminta\n\n"
+                "Klik tombol di bawah untuk membuat akun Telegraph otomatis:",
+                parse_mode='HTML',
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("Buat Akun Telegraph", callback_data="create_telegraph")],
+                    [InlineKeyboardButton("Kembali", callback_data="back")]
+                ])
+            )
+
+    elif data == "create_telegraph":
+        await query.edit_message_text(
+            "<b>📰 MEMBUAT AKUN TELEGRAPH...</b>\n\n"
+            "<i>⏳ Sedang membuat akun dan halaman...</i>",
+            parse_mode='HTML'
+        )
+
+        # Buat akun Telegraph
+        token = create_telegraph_account()
+        if token:
+            jadwal_data["telegraph_token"] = token
+
+            # Buat halaman pertama
+            if update_telegraph():
+                save_data()
+                await query.edit_message_text(
+                    f"<b>✅ TELEGRAPH BERHASIL DIBUAT!</b>\n\n"
+                    f"🔑 <b>Token:</b> Tersimpan ✅\n"
+                    f"📄 <b>Halaman:</b> <a href='{jadwal_data['telegraph_url']}'>Lihat Telegraph</a>\n\n"
+                    f"<i>💡 Sekarang link 'Jadwal Donghua Semua Hari' akan mengarah ke Telegraph!</i>",
+                    parse_mode='HTML',
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("Kembali", callback_data="back")]
+                    ])
+                )
+            else:
+                await query.edit_message_text(
+                    "<b>⚠️ TELEGRAPH TOKEN DIBUAT, TAPI HALAMAN GAGAL!</b>\n\n"
+                    "Token tersimpan, coba update manual:",
+                    parse_mode='HTML',
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("Coba Update", callback_data="update_telegraph")],
+                        [InlineKeyboardButton("Kembali", callback_data="back")]
+                    ])
+                )
+        else:
+            await query.edit_message_text(
+                "<b>❌ GAGAL MEMBUAT AKUN TELEGRAPH!</b>\n\n"
+                "Kemungkinan masalah:\n"
+                "• Koneksi internet\n"
+                "• Telegraph server down\n\n"
+                "Silakan coba lagi nanti.",
+                parse_mode='HTML',
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("Coba Lagi", callback_data="create_telegraph")],
+                    [InlineKeyboardButton("Kembali", callback_data="back")]
+                ])
+            )
+
+    elif data == "update_telegraph":
+        if not jadwal_data.get("telegraph_token"):
+            await query.answer("❌ Token Telegraph belum ada!")
+            return
+
+        await query.edit_message_text(
+            "<b>📰 MENGUPDATE TELEGRAPH...</b>\n\n"
+            "<i>⏳ Sedang memperbarui halaman...</i>",
+            parse_mode='HTML'
+        )
+
+        if update_telegraph():
+            await query.edit_message_text(
+                f"<b>✅ TELEGRAPH BERHASIL DIUPDATE!</b>\n\n"
+                f"📄 <b>Halaman:</b> <a href='{jadwal_data['telegraph_url']}'>Lihat Telegraph</a>\n"
+                f"⏰ <b>Update:</b> {datetime.now(WIB).strftime('%H:%M WIB')}\n\n"
+                f"<i>💡 Semua jadwal terbaru sudah masuk Telegraph!</i>",
+                parse_mode='HTML',
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("Kembali", callback_data="back")]
+                ])
+            )
+        else:
+            await query.edit_message_text(
+                "<b>❌ GAGAL UPDATE TELEGRAPH!</b>\n\n"
+                "Kemungkinan:\n"
+                "• Token tidak valid\n"
+                "• Koneksi bermasalah\n"
+                "• Telegraph server error\n\n"
+                "Coba buat token baru:",
+                parse_mode='HTML',
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("Buat Token Baru", callback_data="create_telegraph")],
+                    [InlineKeyboardButton("Kembali", callback_data="back")]
+                ])
+            )
+
+    elif data == "set_time":
+        await query.edit_message_text(
+            "<b>⏰ SET JAM AUTO POST BERGILIRAN</b>\n\n"
+            f"Jam sekarang: <b>{jadwal_data['post_time']} WIB</b>\n\n"
+            "Kirim jam posting otomatis dengan format <b>HH:MM</b>\n\n"
+            "<b>Contoh:</b> <code>06:00</code> atau <code>18:30</code>\n\n"
+            "<b>🔄 Cara Kerja Bergiliran:</b>\n"
+            "• Jam 06:00 → Channel/Group 1 posting\n"
+            "• Jam 06:01 → Channel/Group 2 posting\n"
+            "• Jam 06:02 → Channel/Group 3 posting\n"
+            "• Dan seterusnya setiap 1 menit!\n\n"
+            "<i>🌏 Menggunakan timezone WIB (UTC+7)</i>",
+            parse_mode='HTML',
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Kembali", callback_data="back")]])
+        )
+        context.user_data['waiting_input'] = 'time'
+
+    elif data == "toggle_auto":
+        jadwal_data["auto_post_enabled"] = not jadwal_data["auto_post_enabled"]
+        save_data()
+
+        if jadwal_data["auto_post_enabled"]:
+            # Enable jobs dengan timezone WIB
+            if jadwal_data["channels"]:
+                try:
+                    hour, minute = map(int, jadwal_data["post_time"].split(":"))
+                    # Schedule job untuk setiap channel dengan interval 1 menit
+                    for i, channel in enumerate(jadwal_data["channels"]):
+                        post_minute = (minute + i) % 60
+                        post_hour = hour + (minute + i) // 60
+                        if post_hour >= 24:
+                            post_hour = post_hour % 24
+
+                        wib_time = time(post_hour, post_minute, tzinfo=WIB)
+                        context.job_queue.run_daily(
+                            scheduled_daily_post,
+                            time=wib_time,
+                            name=f'daily_auto_post_{i}',
+                            data={'channel': channel, 'index': i}
+                        )
+
+                    status_msg = f"✅ <b>AUTO POST DIAKTIFKAN!</b>\n\n📊 <b>Schedule Bergiliran:</b>\n"
+                    for i, channel in enumerate(jadwal_data["channels"]):
+                        post_minute = (minute + i) % 60
+                        post_hour = hour + (minute + i) // 60
+                        if post_hour >= 24:
+                            post_hour = post_hour % 24
+                        status_msg += f"  • {channel}: {cached_format_time(post_hour, post_minute)} WIB\n"
+
+                except Exception as e:
+                    logger.error(f"Enable auto post error: {e}")
+                    status_msg = "⚠️ <b>AUTO POST AKTIF</b>\nTapi ada error scheduling!"
+            else:
+                status_msg = "⚠️ <b>AUTO POST AKTIF</b>\nTapi belum ada channel terdaftar!"
+        else:
+            # Disable semua jobs
+            for i in range(10):  # Max 10 channels untuk clean up
+                current_jobs = context.job_queue.get_jobs_by_name(f'daily_auto_post_{i}')
+                for job in current_jobs:
+                    job.schedule_removal()
+
+            status_msg = "🔴 <b>AUTO POST DINONAKTIFKAN!</b>\n\nBot tidak akan posting otomatis."
+
+        await query.edit_message_text(
+            status_msg + "\n\n<i>💡 Status disimpan otomatis!</i>",
+            parse_mode='HTML',
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Kembali", callback_data="back")]])
+        )
+
+    elif data == "tambah":
+        await query.edit_message_text(
+            "<b>➕ TAMBAH JADWAL DONGHUA</b>\n\n"
+            "<b>Format Jadwal Harian:</b>\n"
+            "<code>Judul Anime|Hari</code>\n"
+            "<code>Judul Anime|Hari|Link</code>\n\n"
+            "<b>Format Upcoming:</b>\n"
+            "<code>Judul|Hari|Tanggal</code>\n"
+            "<code>Judul|Hari|Tanggal|Link</code>\n"
+            "<code>Judul|Hari|Tanggal|Season</code>\n"
+            "<code>Judul|Hari|Tanggal|Link|Season</code>\n\n"
+            "<b>📝 Contoh:</b>\n"
+            "• <code>Purple River Season 2|Senin</code>\n"
+            "• <code>Purple River Season 2|Senin|https://link.com</code>\n"
+            "• <code>The King Avatar|Minggu|25 Desember</code>\n"
+            "• <code>The King Avatar|Minggu|25 Desember|https://link.com</code>\n"
+            "• <code>The King Avatar|Minggu|25 Desember|3</code>\n"
+            "• <code>The King Avatar|Minggu|25 Desember|https://link.com|3</code>\n\n"
+            "<b>📅 Hari yang valid:</b>\n"
+            "Senin, Selasa, Rabu, Kamis, Jumat, Sabtu, Minggu\n\n"
+            "<i>💡 Jadwal harian akan muncul setiap hari sesuai hari yang dipilih!</i>\n"
+            "<i>🔮 Upcoming akan muncul di blockquote hijau seperti contoh!</i>",
+            parse_mode='HTML',
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Kembali", callback_data="back")]])
+        )
+        context.user_data['waiting_input'] = 'tambah'
+
+    elif data == "preview":
+        msg = format_jadwal_hari_ini()
+        try:
+            await query.edit_message_text(
+                f"<b>📢 PREVIEW HARI INI</b>\n\n"
+                f"<i>Ini yang akan dipost otomatis:</i>\n\n"
+                f"<blockquote><b>{msg}</b></blockquote>",
+                parse_mode='HTML',
+                disable_web_page_preview=True,
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("Send Now ke Semua", callback_data="send_now")],
+                    [InlineKeyboardButton("Kembali", callback_data="back")]
+                ])
+            )
+        except Exception as e:
+            logger.error(f"Preview error: {e}")
+            await query.edit_message_text(
+                "<b>❌ Error Preview</b>\n\nGagal generate preview jadwal.",
+                parse_mode='HTML',
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Kembali", callback_data="back")]])
+            )
+
+    elif data == "send_now":
+        if not jadwal_data["channels"]:
+            await query.answer("❌ Belum ada channel terdaftar!")
+            return
+
+        await query.edit_message_text(
+            "<b>🚀 MENGIRIM KE SEMUA CHANNEL/GROUP...</b>\n\n"
+            f"📊 <b>Target:</b> {len(jadwal_data['channels'])} channel/group\n"
+            "<i>⏳ Sedang mengirim bergiliran...</i>",
+            parse_mode='HTML'
+        )
+
+        success_count = 0
+        error_count = 0
+
+        try:
+            # Update Telegraph dulu
+            if jadwal_data.get("telegraph_token"):
+                update_telegraph()
+
+            message = format_jadwal_hari_ini()
+
+            # Kirim ke semua channel bergiliran dengan delay 1 menit
+            for i, channel in enumerate(jadwal_data["channels"]):
+                try:
+                    if i > 0:  # Delay untuk channel kedua dan seterusnya
+                        await asyncio.sleep(60)  # 1 menit delay
+
+                    await send_jadwal_with_media(channel, context, message)
+                    success_count += 1
+
+                    # Update progress
+                    if i < len(jadwal_data["channels"]) - 1:
+                        await query.edit_message_text(
+                            f"<b>🚀 MENGIRIM BERGILIRAN...</b>\n\n"
+                            f"✅ <b>Berhasil:</b> {success_count}\n"
+                            f"❌ <b>Gagal:</b> {error_count}\n"
+                            f"⏳ <b>Progress:</b> {i+1}/{len(jadwal_data['channels'])}\n\n"
+                            f"<i>⏰ Menunggu 1 menit untuk channel berikutnya...</i>",
+                            parse_mode='HTML'
+                        )
+
+                except Exception as e:
+                    logger.error(f"Send to {channel} error: {e}")
+                    error_count += 1
+
+            # Final result
+            telegraph_info = " + Telegraph updated" if jadwal_data.get("telegraph_token") else ""
+            today_media = get_media_for_today()
+            media_info = ""
+            if today_media["url"]:
+                media_info = f" + {today_media['type'].title()}"
+
+            await query.edit_message_text(
+                f"<b>🎯 SEND NOW SELESAI!</b>\n\n"
+                f"✅ <b>Berhasil:</b> {success_count}\n"
+                f"❌ <b>Gagal:</b> {error_count}\n"
+                f"📊 <b>Total:</b> {len(jadwal_data['channels'])} channel/group\n"
+                f"⏰ <b>Waktu:</b> {datetime.now(WIB).strftime('%H:%M WIB')}\n"
+                f"🎨 <b>Format:</b> Caption dengan media{media_info}{telegraph_info}\n\n"
+                f"<i>🔄 Dikirim bergiliran dengan interval 1 menit!</i>",
+                parse_mode='HTML',
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Kembali", callback_data="back")]])
+            )
+
+        except Exception as e:
+            logger.error(f"Send now error: {e}")
+            await query.answer(f"❌ Gagal kirim: {str(e)}")
+
+    elif data == "hapus":
+        # Generate halaman 1 dengan pagination
+        all_items = get_all_schedule_items()
+        total_items = len(all_items)
+
+        if total_items == 0:
+            await query.edit_message_text(
+                "<b>🗑️ HAPUS JADWAL</b>\n\n"
+                "❌ <b>Belum ada jadwal!</b>\n\n"
+                "<i>Tambahkan jadwal terlebih dahulu.</i>",
+                parse_mode='HTML',
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Kembali", callback_data="back")]])
+            )
+            return
+
+        keyboard = generate_delete_keyboard(page=1)
+        total_pages = math.ceil(total_items / 10)
+
+        await query.edit_message_text(
+            f"<b>🗑️ HAPUS JADWAL</b>\n\n"
+            f"📊 <b>Total:</b> {total_items} jadwal\n"
+            f"📄 <b>Halaman:</b> 1 dari {total_pages}\n\n"
+            f"<i>Pilih jadwal yang ingin dihapus:</i>\n"
+            f"<i>📰 Telegraph akan otomatis terupdate setelah dihapus!</i>",
+            parse_mode='HTML',
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+
+    elif data.startswith("del_page_"):
+        page = int(data.replace("del_page_", ""))
+        all_items = get_all_schedule_items()
+        total_items = len(all_items)
+        total_pages = math.ceil(total_items / 10)
+
+        keyboard = generate_delete_keyboard(page=page)
+
+        await query.edit_message_text(
+            f"<b>🗑️ HAPUS JADWAL</b>\n\n"
+            f"📊 <b>Total:</b> {total_items} jadwal\n"
+            f"📄 <b>Halaman:</b> {page} dari {total_pages}\n\n"
+            f"<i>Pilih jadwal yang ingin dihapus:</i>\n"
+            f"<i>📰 Telegraph akan otomatis terupdate setelah dihapus!</i>",
+            parse_mode='HTML',
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+
+    elif data == "lihat":
+        msg = "<b>📋 SEMUA JADWAL DONGHUA</b>\n\n"
+
+        total_harian = 0
+        for hari in ["Senin","Selasa","Rabu","Kamis","Jumat","Sabtu","Minggu"]:
+            emoji_hari = {"Senin":"📅","Selasa":"📅","Rabu":"📅","Kamis":"📅","Jumat":"📅","Sabtu":"🎉","Minggu":"🎉"}
+            msg += f"<b>{emoji_hari.get(hari,'📅')} {hari}:</b>\n"
+
+            if jadwal_data["harian"][hari]:
+                for i, anime in enumerate(jadwal_data["harian"][hari], 1):
+                    if isinstance(anime, dict):
+                        msg += f'   {i}. <a href="{anime["link"]}">{anime["judul"]}</a>\n'
+                    else:
+                        msg += f"   {i}. {anime}\n"
+                total_harian += len(jadwal_data["harian"][hari])
+            else:
+                msg += "   <i>- Jadwal belum di isi</i>\n"
+            msg += "\n"
+
+        msg += f"<b>🔮 Upcoming Donghua ({len(jadwal_data['upcoming'])}):</b>\n"
+        if jadwal_data["upcoming"]:
+            for i, up in enumerate(jadwal_data["upcoming"], 1):
+                season_text = f"[Season {up.get('season')}]" if up.get('season') else ""
+                msg += f"   {i}. <b>{up['judul']}</b>{season_text}\n"
+                msg += f"      📅 {up['hari']}, {up['tanggal']}\n"
+        else:
+            msg += "   <i>- Belum ada upcoming</i>\n"
+
+        msg += f"\n<b>📊 TOTAL: {total_harian} jadwal harian</b>"
+
+        # Tambah info Telegraph
+        if jadwal_data.get("telegraph_url"):
+            msg += f"\n📰 <b>Telegraph:</b> <a href='{jadwal_data['telegraph_url']}'>Lihat</a>"
+
+        await query.edit_message_text(
+            msg,
+            parse_mode='HTML',
+            disable_web_page_preview= True,
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Kembali", callback_data="back")]])
+        )
+
+    elif data == "back":
+        await panel_refresh(query, context)
+
+    elif data.startswith("del_h_"):
+        parts = data.replace("del_h_", "").split("_")
+        if len(parts) >= 2:
+            hari = parts[0]
+            target_hash = int(parts[1])
+
+            original_list = jadwal_data["harian"][hari][:]
+            for anime in original_list:
+                if isinstance(anime, dict):
+                    if hash(anime['judul']) % 1000 == target_hash:
+                        jadwal_data["harian"][hari].remove(anime)
+                        save_data()
+                        # Update Telegraph setelah hapus
+                        if jadwal_data.get("telegraph_token"):
+                            update_telegraph()
+                        await query.answer(f"✅ {anime['judul']} dihapus dari {hari}!")
+                        break
+                else:
+                    if hash(anime) % 1000 == target_hash:
+                        jadwal_data["harian"][hari].remove(anime)
+                        save_data()
+                        # Update Telegraph setelah hapus
+                        if jadwal_data.get("telegraph_token"):
+                            update_telegraph()
+                        await query.answer(f"✅ {anime} dihapus dari {hari}!")
+                        break
+            else:
+                await query.answer("❌ Jadwal tidak ditemukan!")
+
+        await panel_refresh(query, context)
+
+    elif data.startswith("del_u_"):
+        try:
+            idx = int(data.replace("del_u_", ""))
+            if 0 <= idx < len(jadwal_data["upcoming"]):
+                deleted_item = jadwal_data["upcoming"].pop(idx)
+                save_data()
+                await query.answer(f"✅ {deleted_item['judul']} dihapus!")
+            else:
+                await query.answer("❌ Item tidak ditemukan!")
+        except Exception as e:
+            logger.error(f"Delete upcoming error: {e}")
+            await query.answer("❌ Error menghapus!")
+
+        await panel_refresh(query, context)
+
+async def panel_refresh(query, context):
+    """Refresh panel dengan info terbaru"""
+    channels_info = f"{len(jadwal_data['channels'])} channel/group" if jadwal_data["channels"] else "❌ Belum diset"
+    time_info = jadwal_data["post_time"]
+    auto_status = "🟢 AKTIF" if jadwal_data["auto_post_enabled"] else "🔴 NONAKTIF"
+    telegraph_status = "🟢 AKTIF" if jadwal_data.get("telegraph_token") else "🔴 NONAKTIF"
+    rules_status = "🟢 SUDAH DISET" if jadwal_data.get("rules_text") else "🔴 BELUM DISET"
+
+    # Hitung media status
+    media_count = sum(1 for hari in jadwal_data["media_jadwal"] if jadwal_data["media_jadwal"][hari]["url"])
+    media_status = f"🟢 {media_count}/7 HARI" if media_count > 0 else "🔴 BELUM DISET"
+
+    today = get_today()
+    jadwal_hari_ini = len(jadwal_data["harian"][today])
+    total_minggu = sum(len(jadwal_data["harian"][hari]) for hari in jadwal_data["harian"])
+
+    keyboard = [
+        [InlineKeyboardButton("Tambah Jadwal", callback_data="tambah"),
+         InlineKeyboardButton("Hapus Jadwal", callback_data="hapus")],
+        [InlineKeyboardButton("Lihat Semua", callback_data="lihat"),
+         InlineKeyboardButton("Preview Hari Ini", callback_data="preview")],
+        [InlineKeyboardButton("Kelola Channel", callback_data="manage_channels"),
+         InlineKeyboardButton("Set Jam Post", callback_data="set_time")],
+        [InlineKeyboardButton("Setup Telegraph", callback_data="setup_telegraph"),
+         InlineKeyboardButton("Toggle Auto Post", callback_data="toggle_auto")],
+        [InlineKeyboardButton("Set Rules", callback_data="set_rules"),
+         InlineKeyboardButton("Preview Rules", callback_data="preview_rules")],
+        [InlineKeyboardButton("Set Media Jadwal", callback_data="set_media")]
+    ]
+
+    next_post = "Tidak ada" if not jadwal_data["auto_post_enabled"] else f"Bergiliran setiap hari jam {jadwal_data['post_time']}"
+
+    msg = f"""<b>🎬 PANEL ADMIN JADWAL DONGHUA</b>
+
+<b>📊 Status Sistem:</b>
+📅 Hari ini: <b>{today}</b>
+📝 Jadwal hari ini: <b>{jadwal_hari_ini} anime</b>
+📈 Total minggu ini: <b>{total_minggu} anime</b>
+📺 Channel/Group: <b>{channels_info}</b>
+⏰ Jam auto post: <b>{time_info} WIB</b>
+🤖 Status: <b>{auto_status}</b>
+📰 Telegraph: <b>{telegraph_status}</b>
+📜 Rules: <b>{rules_status}</b>
+🎨 Media Jadwal: <b>{media_status}</b>
+⏭️ Posting: <b>{next_post}</b>"""
+
+    try:
+        await query.edit_message_text(
+            msg,
+            parse_mode='HTML',
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+    except Exception as e:
+        logger.error(f"Panel refresh error: {e}")
+
+# =================== TEXT INPUT HANDLER ===================
+async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Safety check untuk user yang valid
+    if not update.effective_user or update.effective_user.id != OWNER_ID:
+        return
+
+    waiting_for = context.user_data.get('waiting_input')
+    waiting_media = context.user_data.get('waiting_media')
+
+    text = update.message.text.strip()
+
+    if waiting_media:
+        # Handle URL media upload
+        if text and text.startswith(('http://', 'https://')):
+            hari = waiting_media
+
+            # Detect media type based on URL
+            lower_text = text.lower()
+            if any(ext in lower_text for ext in ['.jpg', '.jpeg', '.png', '.webp']):
+                media_type = "photo"
+            elif any(ext in lower_text for ext in ['.mp4', '.mov', '.avi', '.gif']):
+                media_type = "video"
+            else:
+                # Default to photo for unknown extensions
+                media_type = "photo"
+
+            # Save media without testing
+            jadwal_data["media_jadwal"][hari] = {"type": media_type, "url": text}
+            save_data()
+
+            type_display = "Foto" if media_type == "photo" else "Video/GIF"
+            await update.message.reply_text(
+                f"✅ <b>MEDIA {hari.upper()} BERHASIL DISET!</b>\n\n"
+                f"🎨 <b>Type:</b> {type_display}\n"
+                f"🔗 <b>URL:</b> <code>{text[:50]}...</code>\n"
+                f"📅 <b>Hari:</b> {hari}\n\n"
+                f"<b>✨ Fitur Aktif:</b>\n"
+                f"• Media akan muncul saat jadwal hari {hari}\n"
+                f"• Caption berisi jadwal lengkap\n"
+                f"• Otomatis di auto post\n"
+                f"• Support berbagai format\n\n"
+                f"<i>💡 Jadwal hari {hari} sekarang akan dikirim dengan {type_display.lower()}!</i>",
+                parse_mode='HTML'
+            )
+        else:
+            await update.message.reply_text(
+                "❌ <b>Format URL Tidak Valid!</b>\n\n"
+                "URL harus dimulai dengan <code>http://</code> atau <code>https://</code>\n\n"
+                "<b>Atau kirim media langsung:</b>\n"
+                "• Foto, video, atau GIF\n"
+                "• Forward dari chat lain\n\n"
+                "<b>Contoh URL yang benar:</b>\n"
+                "<code>https://example.com/jadwal.jpg</code>\n"
+                "<code>https://telegra.ph/file/abc123.mp4</code>",
+                parse_mode='HTML'
+            )
+        context.user_data['waiting_media'] = None
+        return
+
+    if not waiting_for:
+        return
+
+    if waiting_for == 'set_rules':
+        if not text:
+            await update.message.reply_text("❌ Rules tidak boleh kosong!")
+            return
+
+        # Simpan rules dengan support HTML
+        jadwal_data["rules_text"] = text
+        save_data()
+
+        await update.message.reply_text(
+            f"✅ <b>Rules Berhasil Diset!</b>\n\n"
+            f"<b>📜 Preview Rules:</b>\n"
+            f"<blockquote>{format_rules_message()}</blockquote>\n\n"
+            f"<b>✨ Fitur Rules:</b>\n"
+            f"• Command: <code>/rules</code>\n"
+            f"• Anti spam: 20 menit\n"
+            f"• Auto delete: 10 detik\n"
+            f"• Support HTML tags\n\n"
+            f"<i>💡 User sekarang bisa ketik /rules untuk melihat rules!</i>",
+            parse_mode='HTML'
+        )
+
+    elif waiting_for == 'tambah':
+        if "|" not in text:
+            await update.message.reply_text(
+                "❌ <b>Format Salah!</b>\n\n"
+                "Harus menggunakan separator <b>|</b>\n\n"
+                "Contoh:\n<code>Purple River Season 2|Senin</code>",
+                parse_mode='HTML'
+            )
+            return
+
+        parts = [p.strip() for p in text.split("|")]
+
+        if len(parts) == 2:  # Jadwal harian tanpa link
+            judul, hari = parts
+
+            if not judul:
+                await update.message.reply_text("❌ Judul anime tidak boleh kosong!")
+                return
+
+            if hari not in ["Senin","Selasa","Rabu","Kamis","Jumat","Sabtu","Minggu"]:
+                await update.message.reply_text("❌ Hari tidak valid! Gunakan: Senin, Selasa, Rabu, Kamis, Jumat, Sabtu, Minggu")
+                return
+
+            # Cek apakah judul sudah ada (dalam bentuk string atau dict)
+            for anime in jadwal_data["harian"][hari]:
+                if isinstance(anime, dict) and anime['judul'] == judul:
+                    await update.message.reply_text(f"⚠️ <b>{judul}</b> sudah ada di hari {hari}!", parse_mode='HTML')
+                    return
+                elif isinstance(anime, str) and anime == judul:
+                    await update.message.reply_text(f"⚠️ <b>{judul}</b> sudah ada di hari {hari}!", parse_mode='HTML')
+                    return
+
+            jadwal_data["harian"][hari].append(judul)
+            save_data()
+
+            # Update Telegraph otomatis setelah tambah jadwal
+            telegraph_updated = ""
+            if jadwal_data.get("telegraph_token"):
+                if update_telegraph():
+                    telegraph_updated = "\n📰 <b>Telegraph:</b> Otomatis terupdate ✅"
+                else:
+                    telegraph_updated = "\n📰 <b>Telegraph:</b> Gagal update ❌"
+
+            await update.message.reply_text(
+                f"✅ <b>Jadwal Harian Berhasil Ditambah!</b>\n\n"
+                f"📝 <b>Anime:</b> {judul}\n"
+                f"📅 <b>Hari:</b> {hari}{telegraph_updated}\n\n"
+                f"<i>💡 Akan muncul di jadwal harian tanpa link!</i>",
+                parse_mode='HTML'
+            )
+
+        elif len(parts) == 3:
+            judul, hari, param3 = parts
+
+            if not judul:
+                await update.message.reply_text("❌ Judul anime tidak boleh kosong!")
+                return
+
+            if hari not in ["Senin","Selasa","Rabu","Kamis","Jumat","Sabtu","Minggu"]:
+                await update.message.reply_text("❌ Hari tidak valid!")
+                return
+
+            # Cek apakah param3 adalah URL (untuk jadwal harian dengan link)
+            if param3.startswith(("http://", "https://")):
+                # Jadwal harian dengan link
+                link = param3
+
+                # Cek apakah judul sudah ada
+                for anime in jadwal_data["harian"][hari]:
+                    if isinstance(anime, dict) and anime['judul'] == judul:
+                        await update.message.reply_text(f"⚠️ <b>{judul}</b> sudah ada di hari {hari}!", parse_mode='HTML')
+                        return
+                    elif isinstance(anime, str) and anime == judul:
+                        await update.message.reply_text(f"⚠️ <b>{judul}</b> sudah ada di hari {hari}!", parse_mode='HTML')
+                        return
+
+                anime_data = {"judul": judul, "link": link}
+                jadwal_data["harian"][hari].append(anime_data)
+                save_data()
+
+                # Update Telegraph otomatis setelah tambah jadwal
+                telegraph_updated = ""
+                if jadwal_data.get("telegraph_token"):
+                    if update_telegraph():
+                        telegraph_updated = "\n📰 <b>Telegraph:</b> Otomatis terupdate ✅"
+                    else:
+                        telegraph_updated = "\n📰 <b>Telegraph:</b> Gagal update ❌"
+
+                await update.message.reply_text(
+                    f"✅ <b>Jadwal Harian dengan Link Berhasil Ditambah!</b>\n\n"
+                    f"📝 <b>Anime:</b> {judul}\n"
+                    f"📅 <b>Hari:</b> {hari}\n"
+                    f"🔗 <b>Link:</b> <a href='{link}'>Preview</a>{telegraph_updated}\n\n"
+                    f"<i>💡 Akan muncul di jadwal harian sebagai hyperlink!</i>",
+                    parse_mode='HTML'
+                )
+            else:
+                # Upcoming tanpa link - param3 adalah tanggal
+                tanggal = param3
+
+                if any(up["judul"] == judul for up in jadwal_data["upcoming"]):
+                    await update.message.reply_text(f"⚠️ <b>{judul}</b> sudah ada di upcoming!", parse_mode='HTML')
+                    return
+
+                upcoming_item = {
+                    "judul": judul,
+                    "hari": hari,
+                    "tanggal": tanggal
+                }
+
+                jadwal_data["upcoming"].append(upcoming_item)
+                save_data()
+
+                await update.message.reply_text(
+                    f"✅ <b>Upcoming Tanpa Link Berhasil Ditambah!</b>\n\n"
+                    f"📝 <b>Anime:</b> {judul}\n"
+                    f"📅 <b>Rilis:</b> {hari}, {tanggal}\n\n"
+                    f"<i>💡 Akan muncul di blockquote tanpa link preview!</i>",
+                    parse_mode='HTML'
+                )
+
+        elif len(parts) == 4:  # Upcoming dengan link atau season
+            judul, hari, tanggal, param4 = parts
+
+            if not all([judul, hari, tanggal]):
+                await update.message.reply_text("❌ Judul, hari, dan tanggal harus diisi!")
+                return
+
+            if hari not in ["Senin","Selasa","Rabu","Kamis","Jumat","Sabtu","Minggu"]:
+                await update.message.reply_text("❌ Hari tidak valid!")
+                return
+
+            if any(up["judul"] == judul for up in jadwal_data["upcoming"]):
+                await update.message.reply_text(f"⚠️ <b>{judul}</b> sudah ada di upcoming!", parse_mode='HTML')
+                return
+
+            # Cek apakah param4 adalah URL atau season
+            if param4.startswith(("http://", "https://")):
+                # Upcoming dengan link
+                link = param4
+
+                upcoming_item = {
+                    "judul": judul,
+                    "hari": hari,
+                    "tanggal": tanggal,
+                    "link": link
+                }
+
+                jadwal_data["upcoming"].append(upcoming_item)
+                save_data()
+
+                await update.message.reply_text(
+                    f"✅ <b>Upcoming dengan Link Berhasil Ditambah!</b>\n\n"
+                    f"📝 <b>Anime:</b> {judul}\n"
+                    f"📅 <b>Rilis:</b> {hari}, {tanggal}\n"
+                    f"🔗 <b>Preview:</b> <a href='{link}'>Link</a>\n\n"
+                    f"<i>💡 Akan muncul di blockquote hijau dengan link preview!</i>",
+                    parse_mode='HTML'
+                )
+            elif param4:
+                # Upcoming dengan season (param4 tidak kosong)
+                season = param4
+
+                upcoming_item = {
+                    "judul": judul,
+                    "hari": hari,
+                    "tanggal": tanggal,
+                    "season": season
+                }
+
+                jadwal_data["upcoming"].append(upcoming_item)
+                save_data()
+
+                await update.message.reply_text(
+                    f"✅ <b>Upcoming dengan Season Berhasil Ditambah!</b>\n\n"
+                    f"📝 <b>Anime:</b> {judul}\n"
+                    f"📺 <b>Season:</b> {season}\n"
+                    f"📅 <b>Rilis:</b> {hari}, {tanggal}\n\n"
+                    f"<i>💡 Akan muncul di blockquote tanpa link preview!</i>",
+                    parse_mode='HTML'
+                )
+            else:
+                # param4 kosong - upcoming tanpa link dan tanpa season
+                upcoming_item = {
+                    "judul": judul,
+                    "hari": hari,
+                    "tanggal": tanggal
+                }
+
+                jadwal_data["upcoming"].append(upcoming_item)
+                save_data()
+
+                await update.message.reply_text(
+                    f"✅ <b>Upcoming Tanpa Link dan Season Berhasil Ditambah!</b>\n\n"
+                    f"📝 <b>Anime:</b> {judul}\n"
+                    f"📅 <b>Rilis:</b> {hari}, {tanggal}\n\n"
+                    f"<i>💡 Akan muncul di blockquote tanpa link dan season!</i>",
+                    parse_mode='HTML'
+                )
+
+        elif len(parts) == 5:  # Upcoming lengkap dengan link dan season
+            judul, hari, tanggal, link, season = parts
+
+            if not all([judul, hari, tanggal, link, season]):
+                await update.message.reply_text("❌ Semua field harus diisi!")
+                return
+
+            if hari not in ["Senin","Selasa","Rabu","Kamis","Jumat","Sabtu","Minggu"]:
+                await update.message.reply_text("❌ Hari tidak valid!")
+                return
+
+            if not link.startswith(("http://", "https://")):
+                await update.message.reply_text("❌ Link harus dimulai dengan http:// atau https://")
+                return
+
+            if any(up["judul"] == judul for up in jadwal_data["upcoming"]):
+                await update.message.reply_text(f"⚠️ <b>{judul}</b> sudah ada di upcoming!", parse_mode='HTML')
+                return
+
+            upcoming_item = {
+                "judul": judul,
+                "hari": hari,
+                "tanggal": tanggal,
+                "link": link,
+                "season": season
+            }
+
+            jadwal_data["upcoming"].append(upcoming_item)
+            save_data()
+
+            await update.message.reply_text(
+                f"✅ <b>Upcoming Lengkap Berhasil Ditambah!</b>\n\n"
+                f"📝 <b>Anime:</b> {judul}\n"
+                f"📺 <b>Season:</b> {season}\n"
+                f"📅 <b>Rilis:</b> {hari}, {tanggal}\n"
+                f"🔗 <b>Preview:</b> <a href='{link}'>Link</a>\n\n"
+                f"<i>💡 Akan muncul di blockquote hijau lengkap seperti foto contoh!</i>",
+                parse_mode='HTML'
+            )
+
+        else:
+            await update.message.reply_text(
+                "❌ <b>Format Salah!</b>\n\n"
+                "<b>Format yang didukung:</b>\n"
+                "• <code>Judul|Hari</code> (harian tanpa link)\n"
+                "• <code>Judul|Hari|Link</code> (harian dengan link)\n"
+                "• <code>Judul|Hari|Tanggal</code> (upcoming tanpa link/season)\n"
+                "• <code>Judul|Hari|Tanggal|Link</code> (upcoming dengan link)\n"
+                "• <code>Judul|Hari|Tanggal|Season</code> (upcoming dengan season)\n"
+                "• <code>Judul|Hari|Tanggal|Link|Season</code> (upcoming lengkap)",
+                parse_mode='HTML'
+            )
+
+    elif waiting_for == 'add_channel':
+        # Support channel dan group
+        if not (text.startswith('-') and len(text) > 5):
+            await update.message.reply_text(
+                "❌ <b>Format Chat ID Salah!</b>\n\n"
+                "Chat ID channel/group harus:\n"
+                "• Dimulai dengan tanda <b>-</b>\n"
+                "• Berupa angka panjang\n"
+                "• Contoh: <code>-1001234567890</code>\n\n"
+                "<b>Support channel DAN group!</b>",
+                parse_mode='HTML'
+            )
+            return
+
+        if text in jadwal_data["channels"]:
+            await update.message.reply_text(
+                f"⚠️ <b>Channel/Group Sudah Terdaftar!</b>\n\n"
+                f"📺 <b>Chat ID:</b> <code>{text}</code>\n\n"
+                f"<i>💡 Channel/Group ini sudah ada dalam daftar auto posting bergiliran!</i>",
+                parse_mode='HTML'
+            )
+            return
+
+        try:
+            test_msg = await asyncio.wait_for(
+                context.bot.send_message(text, "🔧 <i>Testing access...</i>", parse_mode='HTML'),
+                timeout=15
+            )
+            await test_msg.delete()
+
+            jadwal_data["channels"].append(text)
+            save_data()
+
+            await update.message.reply_text(
+                f"✅ <b>Channel/Group Berhasil Ditambah!</b>\n\n"
+                f"📺 <b>Chat ID:</b> <code>{text}</code>\n"
+                f"🔗 <b>Status:</b> Terhubung\n"
+                f"📊 <b>Total Channel/Group:</b> {len(jadwal_data['channels'])}\n\n"
+                f"<b>🔄 Urutan Auto Posting Bergiliran:</b>\n"
+                + "\n".join([f"  {i+1}. <code>{ch}</code> → +{i} menit" for i, ch in enumerate(jadwal_data["channels"])]) +
+                f"\n\n<i>💡 Bot siap posting bergiliran format seperti foto contoh!</i>",
+                parse_mode='HTML'
+            )
+
+        except Exception as e:
+            logger.error(f"Channel test error: {e}")
+            error_msg = str(e).lower()
+            if "chat not found" in error_msg:
+                await update.message.reply_text(
+                    "❌ <b>Channel/Group Tidak Ditemukan!</b>\n\n"
+                    "Pastikan Chat ID benar dan bot pernah di-add",
+                    parse_mode='HTML'
+                )
+            elif "not enough rights" in error_msg:
+                await update.message.reply_text(
+                    "❌ <b>Permission Denied!</b>\n\n"
+                    "Bot belum jadi admin atau tidak punya izin posting",
+                    parse_mode='HTML'
+                )
+            else:
+                await update.message.reply_text(f"❌ Error: {str(e)}", parse_mode='HTML')
+
+    elif waiting_for == 'time':
+        if not (":" in text and len(text) == 5):
+            await update.message.reply_text(
+                "❌ <b>Format Jam Salah!</b>\n\n"
+                "Harus format <b>HH:MM</b>\n\n"
+                "Contoh: <code>06:00</code> atau <code>18:15</code>",
+                parse_mode='HTML'
+            )
+            return
+
+        try:
+            hour, minute = map(int, text.split(":"))
+            if not (0 <= hour <= 23 and 0 <= minute <= 59):
+                await update.message.reply_text("❌ Jam/menit tidak valid!", parse_mode='HTML')
+                return
+
+            old_time = jadwal_data["post_time"]
+            jadwal_data["post_time"] = text
+            save_data()
+
+            # Update job schedule jika auto post aktif dengan timezone WIB
+            if jadwal_data["auto_post_enabled"]:
+                # Remove old jobs
+                for i in range(len(jadwal_data.get("channels", []))):
+                    current_jobs = context.job_queue.get_jobs_by_name(f'daily_auto_post_{i}')
+                    for job in current_jobs:
+                        job.schedule_removal()
+
+                # Create new jobs with new time
+                for i, channel in enumerate(jadwal_data["channels"]):
+                    post_minute = (minute + i) % 60
+                    post_hour = hour + (minute + i) // 60
+                    if post_hour >= 24:
+                        post_hour = post_hour % 24
+
+                    wib_time = time(post_hour, post_minute, tzinfo=WIB)
+                    context.job_queue.run_daily(
+                        scheduled_daily_post,
+                        time=wib_time,
+                        name=f'daily_auto_post_{i}',
+                        data={'channel': channel, 'index': i}
+                    )
+
+            await update.message.reply_text(
+                f"✅ <b>Jam Auto Post Berhasil Diupdate!</b>\n\n"
+                f"⏰ <b>Jam lama:</b> {old_time} WIB\n"
+                f"⏰ <b>Jam baru:</b> {text} WIB\n\n"
+                f"<b>🔄 Jadwal Posting Bergiliran:</b>\n"
+                + (("\n".join([f"  • Channel/Group {i+1}: {cached_format_time(hour + (minute + i) // 60, (minute + i) % 60)} WIB" for i in range(len(jadwal_data["channels"]))])) if jadwal_data["channels"] else "  Belum ada channel/group terdaftar") +
+                f"\n\n<i>💡 Bot akan posting otomatis bergiliran sesuai jam yang sudah diset!</i>\n"
+                f"<i>🌏 Menggunakan timezone WIB (UTC+7)</i>",
+                parse_mode='HTML'
+            )
+
+        except ValueError:
+            await update.message.reply_text("❌ Format jam salah! Harus angka HH:MM")
+        except Exception as e:
+            logger.error(f"Time setting error: {e}")
+            await update.message.reply_text("❌ Error setting time!")
+
+    # Reset waiting state
+    context.user_data['waiting_input'] = None
+
+# =================== MEDIA HANDLER ===================
+async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Safety check untuk user yang valid
+    if not update.effective_user or update.effective_user.id != OWNER_ID:
+        return
+
+    waiting_media = context.user_data.get('waiting_media')
+    if not waiting_media:
+        return
+
+    hari = waiting_media
+
+    try:
+        if update.message.photo:
+            # Photo - Simpan ke channel media atau gunakan file_id dari Telegram
+            file_id = update.message.photo[-1].file_id  # Get highest resolution
+
+            # Gunakan file_id Telegram sebagai URL untuk keamanan
+            jadwal_data["media_jadwal"][hari] = {"type": "photo", "url": file_id}
+            save_data()
+
+            await update.message.reply_text(
+                f"✅ <b>FOTO {hari.upper()} BERHASIL DISET!</b>\n\n"
+                f"📸 <b>Type:</b> Foto\n"
+                f"📅 <b>Hari:</b> {hari}\n"
+                f"🎨 <b>Status:</b> Siap digunakan\n\n"
+                f"<b>✨ Fitur Aktif:</b>\n"
+                f"• Foto akan muncul saat jadwal hari {hari}\n"
+                f"• Caption berisi jadwal lengkap\n"
+                f"• Otomatis di auto post\n\n"
+                f"<i>💡 Jadwal hari {hari} sekarang akan dikirim dengan foto!</i>",
+                parse_mode='HTML'
+            )
+
+        elif update.message.video or update.message.animation:
+            # Video or GIF - Simpan file_id untuk keamanan
+            if update.message.video:
+                file_id = update.message.video.file_id
+            else:
+                file_id = update.message.animation.file_id
+
+            # Gunakan file_id Telegram sebagai URL untuk keamanan
+            jadwal_data["media_jadwal"][hari] = {"type": "video", "url": file_id}
+            save_data()
+
+            await update.message.reply_text(
+                f"✅ <b>VIDEO {hari.upper()} BERHASIL DISET!</b>\n\n"
+                f"🎬 <b>Type:</b> Video/GIF\n"
+                f"📅 <b>Hari:</b> {hari}\n"
+                f"🎨 <b>Status:</b> Siap digunakan\n\n"
+                f"<b>✨ Fitur Aktif:</b>\n"
+                f"• Video/GIF akan muncul saat jadwal hari {hari}\n"
+                f"• Caption berisi jadwal lengkap\n"
+                f"• Otomatis di auto post\n\n"
+                f"<i>💡 Jadwal hari {hari} sekarang akan dikirim dengan video/GIF!</i>",
+                parse_mode='HTML'
+            )
+
+        else:
+            await update.message.reply_text(
+                "❌ <b>Format Media Tidak Didukung!</b>\n\n"
+                "<b>Format yang didukung:</b>\n"
+                "• Foto: JPG, PNG, WEBP\n"
+                "• Video: MP4, MOV, AVI\n"
+                "• GIF: Animated GIF\n\n"
+                "<b>Atau kirim URL media:</b>\n"
+                "<code>https://example.com/media.jpg</code>",
+                parse_mode='HTML'
+            )
+            return
+
+        # Reset waiting state
+        context.user_data['waiting_media'] = None
+
+    except Exception as e:
+        logger.error(f"Media handler error: {e}")
+        await update.message.reply_text(
+            f"❌ <b>Error Upload Media!</b>\n\n"
+            f"🐛 <b>Error:</b> <code>{str(e)[:100]}</code>\n\n"
+            f"<i>💡 Coba kirim media yang berbeda atau URL!</i>",
+            parse_mode='HTML'
+        )
+
+# =================== SCHEDULED DAILY POST ===================
+async def scheduled_daily_post(context: ContextTypes.DEFAULT_TYPE):
+    """Job harian bergiliran - kirim dengan format seperti foto contoh dengan timezone WIB yang benar"""
+    if not jadwal_data["auto_post_enabled"] or not jadwal_data["channels"]:
+        return
+
+    # Get channel info from job data
+    job_data = context.job.data
+    if not job_data:
+        return
+
+    target_channel = job_data.get('channel')
+    channel_index = job_data.get('index', 0)
+
+    if not target_channel:
+        return
+
+    try:
+        # Gunakan WIB timezone untuk mendapatkan hari yang benar
+        now_wib = datetime.now(WIB)
+        today = get_today()
+        today_schedule = jadwal_data["harian"][today]
+
+        # Update Telegraph sebelum posting (hanya untuk channel pertama)
+        if channel_index == 0 and jadwal_data.get("telegraph_token"):
+            update_telegraph()
+
+        # Post dengan format persis seperti foto + media
+        message = format_jadwal_hari_ini()
+
+        await send_jadwal_with_media(target_channel, context, message)
+
+        # Notifikasi ke owner (hanya untuk channel pertama untuk menghindari spam)
+        if channel_index == 0:
+            try:
+                status = f"{len(today_schedule)} anime" if today_schedule else "Libur hari ini"
+                telegraph_info = " + Telegraph updated" if jadwal_data.get("telegraph_token") else ""
+                today_media = get_media_for_today()
+                media_info = ""
+                if today_media["url"]:
+                    media_info = f" + {today_media['type'].title()}"
+
+                await context.bot.send_message(
+                    OWNER_ID,
+                    f"✅ <b>Auto Post Bergiliran Berhasil!</b>\n\n"
+                    f"📅 <b>Hari:</b> {today}\n"
+                    f"📝 <b>Jadwal:</b> {status}\n"
+                    f"⏰ <b>Waktu Mulai:</b> {now_wib.strftime('%H:%M WIB')}\n"
+                    f"🎨 <b>Format:</b> Caption dengan media{media_info}{telegraph_info}\n"
+                    f"📊 <b>Target:</b> {len(jadwal_data['channels'])} channel/group bergiliran\n"
+                    f"🔄 <b>Interval:</b> 1 menit per channel/group",
+                    parse_mode='HTML'
+                )
+            except Exception as e:
+                logger.error(f"Owner notification error: {e}")
+
+    except Exception as e:
+        logger.error(f"Scheduled post error for {target_channel}: {e}")
+        # Hanya kirim notifikasi error untuk channel pertama
+        if channel_index == 0:
+            try:
+                await context.bot.send_message(
+                    OWNER_ID,
+                    f"❌ <b>Auto Post GAGAL!</b>\n\n"
+                    f"⏰ <b>Waktu:</b> {datetime.now(WIB).strftime('%H:%M WIB')}\n"
+                    f"📺 <b>Target:</b> <code>{target_channel}</code>\n"
+                    f"🐛 <b>Error:</b> <code>{str(e)[:150]}</code>",
+                    parse_mode='HTML'
+                )
+            except Exception as notif_error:
+                logger.error(f"Error notification failed: {notif_error}")
+
+# =================== MAIN FUNCTION ===================
+def main():
+    global app
+
+    load_data()
+
+    # Build aplikasi dengan pengaturan yang disederhanakan
+    app = Application.builder().token(BOT_TOKEN).build()
+
+    # Add handlers
+    app.add_handler(CommandHandler("jadwal", jadwal_cmd))
+    app.add_handler(CommandHandler("rules", rules_cmd))
+    app.add_handler(CommandHandler("panel", panel_cmd))
+    app.add_handler(CallbackQueryHandler(handle_callbacks))
+    app.add_handler(MessageHandler(filters.PHOTO | filters.VIDEO | filters.ANIMATION, handle_media))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+
+    # Setup jobs dengan timezone WIB yang benar
+    if jadwal_data["auto_post_enabled"] and jadwal_data["channels"]:
+        try:
+            hour, minute = map(int, jadwal_data["post_time"].split(":"))
+            # Schedule job untuk setiap channel dengan interval 1 menit
+            for i, channel in enumerate(jadwal_data["channels"]):
+                post_minute = (minute + i) % 60
+                post_hour = hour + (minute + i) // 60
+                if post_hour >= 24:
+                    post_hour = post_hour % 24
+
+                wib_time = time(post_hour, post_minute, tzinfo=WIB)
+                app.job_queue.run_daily(
+                    scheduled_daily_post,
+                    time=wib_time,
+                    name=f'daily_auto_post_{i}',
+                    data={'channel': channel, 'index': i}
+                )
+
+            print(f"⏰ Auto post jobs scheduled for {len(jadwal_data['channels'])} channels starting at {jadwal_data['post_time']} WIB")
+
+        except Exception as e:
+            logger.error(f"Job scheduling error: {e}")
+            print(f"❌ Error scheduling jobs: {e}")
+
+    print("🚀 Jadwal Donghua Bot is running...")
+    print(f"📊 Loaded {sum(len(jadwal_data['harian'][d]) for d in jadwal_data['harian'])} harian + {len(jadwal_data['upcoming'])} upcoming")
+    print(f"📺 {len(jadwal_data['channels'])} channels configured for auto posting")
+    print(f"📜 Rules {'configured' if jadwal_data.get('rules_text') else 'not configured'}")
+    media_count = sum(1 for hari in jadwal_data["media_jadwal"] if jadwal_data["media_jadwal"][hari]["url"])
+    print(f"🎨 Media {media_count}/7 days configured")
+    print(f"⏰ Auto post: {'enabled' if jadwal_data['auto_post_enabled'] else 'disabled'}")
+    print("📱 Commands available: /jadwal, /rules, /panel (owner only)")
+    print("🎯 Group commands: /jadwal (auto-delete), /rules (auto-delete)")
+    print("🔒 PM commands: Owner only")
+    print("🔄 Press Ctrl+C to stop")
+
+    try:
+        # Run dengan polling yang disederhanakan
+        app.run_polling(drop_pending_updates=True)
+    except KeyboardInterrupt:
+        print("\n📴 Shutting down...")
+    except Exception as e:
+        print(f"❌ Error: {e}")
+    finally:
+        print("🔚 Bot stopped")
+
+if __name__ == "__main__":
+    try:
+        main()
+    except KeyboardInterrupt:
+        print("\n👋 Goodbye!")
+        sys.exit(0)
+    except Exception as e:
+        print(f"❌ Critical error: {e}")
+        sys.exit(1)

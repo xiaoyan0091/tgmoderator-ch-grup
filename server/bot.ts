@@ -78,18 +78,18 @@ async function checkForceJoin(msg: TelegramBot.Message): Promise<boolean> {
         await bot!.deleteMessage(msg.chat.id, msg.message_id);
 
         const buttons: TelegramBot.InlineKeyboardButton[][] = settings.forceJoinChannels.map((ch: string) => ([{
-          text: `Gabung @${ch}`,
+          text: `Subscribe @${ch}`,
           url: `https://t.me/${ch}`,
         }]));
 
         buttons.push([{
-          text: "Sudah Gabung",
+          text: "Sudah Subscribe",
           callback_data: `forcejoin_check_${chatId}`,
         }]);
 
         const notification = await bot!.sendMessage(
           msg.chat.id,
-          `${getUserMention(msg.from)}, kamu harus bergabung ke channel/grup yang diwajibkan sebelum bisa mengirim pesan di sini.`,
+          `${getUserMention(msg.from)}, kamu harus subscribe ke channel/grup yang diwajibkan sebelum bisa mengirim pesan di sini.`,
           {
             reply_markup: { inline_keyboard: buttons },
             parse_mode: "HTML",
@@ -103,7 +103,7 @@ async function checkForceJoin(msg: TelegramBot.Message): Promise<boolean> {
           action: "force_join",
           targetUser: getUserDisplayName(msg.from),
           performedBy: "bot",
-          details: `Pesan dihapus - belum bergabung ke channel wajib`,
+          details: `Pesan dihapus - belum subscribe ke channel wajib`,
         });
 
         setTimeout(async () => {
@@ -440,7 +440,7 @@ function warnActionLabel(action: string): string {
 function buildMainMenuKeyboard(chatId: string): TelegramBot.InlineKeyboardButton[][] {
   return [
     [{ text: "Pengaturan Fitur", callback_data: `menu_settings_${chatId}` }],
-    [{ text: "Wajib Gabung", callback_data: `menu_forcejoin_${chatId}` },
+    [{ text: "Wajib Sub", callback_data: `menu_forcejoin_${chatId}` },
      { text: "Filter Kata", callback_data: `menu_wordfilter_${chatId}` }],
     [{ text: "Peringatan", callback_data: `menu_warnings_${chatId}` },
      { text: "Statistik", callback_data: `menu_stats_${chatId}` }],
@@ -465,7 +465,7 @@ function buildSettingsKeyboard(chatId: string, settings: any, prefix = "toggle")
 function buildForceJoinKeyboard(chatId: string, settings: any, prefix = "toggle", removePrefix = "removechannel", addPrefix = "addchannel"): TelegramBot.InlineKeyboardButton[][] {
   const back = prefix === "pmtoggle" ? `pm_group_${chatId}` : `menu_main_${chatId}`;
   const kb: TelegramBot.InlineKeyboardButton[][] = [
-    [{ text: `Wajib Gabung: ${s(settings.forceJoinEnabled)}`, callback_data: `${prefix}_forceJoinEnabled_${chatId}` }],
+    [{ text: `Wajib Sub: ${s(settings.forceJoinEnabled)}`, callback_data: `${prefix}_forceJoinEnabled_${chatId}` }],
   ];
   const channels = settings.forceJoinChannels || [];
   if (channels.length > 0) {
@@ -514,13 +514,13 @@ function buildWordFilterKeyboard(chatId: string, settings: any, prefix = "toggle
 function buildStatsText(stats: any, title?: string): string {
   const t = title ? `<b>Statistik: ${escapeHtml(title)}</b>` : `<b>Statistik Grup</b>`;
   if (!stats) return `${t}\n\nBelum ada data.`;
-  return `${t}\n\nPesan: <b>${stats.messagesProcessed}</b> | Dihapus: <b>${stats.messagesDeleted}</b>\nPeringatan: <b>${stats.usersWarned}</b> | Banned: <b>${stats.usersBanned}</b>\nTendang: <b>${stats.usersKicked}</b> | Mute: <b>${stats.usersMuted}</b>\nSpam: <b>${stats.spamBlocked}</b> | Wajib Gabung: <b>${stats.forceJoinBlocked}</b>`;
+  return `${t}\n\nPesan: <b>${stats.messagesProcessed}</b> | Dihapus: <b>${stats.messagesDeleted}</b>\nPeringatan: <b>${stats.usersWarned}</b> | Banned: <b>${stats.usersBanned}</b>\nTendang: <b>${stats.usersKicked}</b> | Mute: <b>${stats.usersMuted}</b>\nSpam: <b>${stats.spamBlocked}</b> | Wajib Sub: <b>${stats.forceJoinBlocked}</b>`;
 }
 
 function buildPmConfigKeyboard(groupId: string): TelegramBot.InlineKeyboardButton[][] {
   return [
     [{ text: "Pengaturan Fitur", callback_data: `pm_settings_${groupId}` }],
-    [{ text: "Wajib Gabung", callback_data: `pm_forcejoin_${groupId}` },
+    [{ text: "Wajib Sub", callback_data: `pm_forcejoin_${groupId}` },
      { text: "Filter Kata", callback_data: `pm_wordfilter_${groupId}` }],
     [{ text: "Peringatan", callback_data: `pm_warnings_${groupId}` },
      { text: "Statistik", callback_data: `pm_stats_${groupId}` }],
@@ -534,9 +534,55 @@ function buildOwnerMenuKeyboard(): TelegramBot.InlineKeyboardButton[][] {
      { text: "Kelola Grup", callback_data: `owner_manage` }],
     [{ text: "Statistik Global", callback_data: `owner_stats` },
      { text: "Log Aktivitas", callback_data: `owner_logs` }],
-    [{ text: "Broadcast", callback_data: `owner_broadcast` }],
+    [{ text: "Broadcast", callback_data: `owner_broadcast_menu` }],
+    [{ text: "Perbarui Info", callback_data: `owner_refresh` }],
     [{ text: "Tutup", callback_data: `menu_close` }],
   ];
+}
+
+async function buildOwnerPanelText(user: TelegramBot.User): Promise<string> {
+  const allGroups = await storage.getGroups();
+  const allStats = await storage.getAllStats();
+
+  let totalMessages = 0, totalDeleted = 0, totalWarned = 0, totalBanned = 0;
+  let totalKicked = 0, totalMuted = 0, totalSpam = 0, totalForceSub = 0;
+  let activeGroups = 0;
+
+  allGroups.forEach(g => { if (g.isActive) activeGroups++; });
+
+  allStats.forEach(s => {
+    totalMessages += s.messagesProcessed ?? 0;
+    totalDeleted += s.messagesDeleted ?? 0;
+    totalWarned += s.usersWarned ?? 0;
+    totalBanned += s.usersBanned ?? 0;
+    totalKicked += s.usersKicked ?? 0;
+    totalMuted += s.usersMuted ?? 0;
+    totalSpam += s.spamBlocked ?? 0;
+    totalForceSub += s.forceJoinBlocked ?? 0;
+  });
+
+  const now = new Date();
+  const waktu = now.toLocaleString("id-ID", { timeZone: "Asia/Jakarta", dateStyle: "long", timeStyle: "short" });
+
+  return `<b>PANEL PEMILIK BOT</b>
+
+<b>Status Sistem:</b>
+Pemilik: ${getUserMention(user)}
+Waktu: <b>${waktu} WIB</b>
+Total Grup: <b>${allGroups.length}</b>
+Grup Aktif: <b>${activeGroups}</b>
+
+<b>Statistik Global:</b>
+Pesan Diproses: <b>${totalMessages}</b>
+Pesan Dihapus: <b>${totalDeleted}</b>
+Pengguna Diperingatkan: <b>${totalWarned}</b>
+Pengguna Dibanned: <b>${totalBanned}</b>
+Pengguna Ditendang: <b>${totalKicked}</b>
+Pengguna Dibisukan: <b>${totalMuted}</b>
+Spam Diblokir: <b>${totalSpam}</b>
+Force Sub Diblokir: <b>${totalForceSub}</b>
+
+Pilih menu di bawah:`;
 }
 
 function buildStartMenuKeyboard(userId: number, groupId?: string): TelegramBot.InlineKeyboardButton[][] {
@@ -544,7 +590,7 @@ function buildStartMenuKeyboard(userId: number, groupId?: string): TelegramBot.I
   if (groupId) {
     kb.push(
       [{ text: "Pengaturan Fitur", callback_data: `pm_settings_${groupId}` }],
-      [{ text: "Wajib Gabung", callback_data: `pm_forcejoin_${groupId}` },
+      [{ text: "Wajib Sub", callback_data: `pm_forcejoin_${groupId}` },
        { text: "Filter Kata", callback_data: `pm_wordfilter_${groupId}` }],
       [{ text: "Peringatan", callback_data: `pm_warnings_${groupId}` },
        { text: "Statistik", callback_data: `pm_stats_${groupId}` }],
@@ -762,7 +808,7 @@ export async function startBot() {
 <b>Pesan Sambutan:</b> ${settings.welcomeEnabled ? "Aktif" : "Nonaktif"}
 <b>Isi Sambutan:</b> ${escapeHtml(settings.welcomeMessage || "-")}
 
-<b>Wajib Gabung:</b> ${settings.forceJoinEnabled ? "Aktif" : "Nonaktif"}
+<b>Wajib Sub:</b> ${settings.forceJoinEnabled ? "Aktif" : "Nonaktif"}
 <b>Channel Wajib:</b> ${channels.length > 0 ? channels.map((c: string) => `@${c}`).join(", ") : "Belum diatur"}
 
 <b>Anti-Spam:</b> ${settings.antiSpamEnabled ? "Aktif" : "Nonaktif"} (maks ${settings.antiSpamMaxMessages}/10 detik)
@@ -810,7 +856,7 @@ Pengguna Dibanned: <b>${stats.usersBanned}</b>
 Pengguna Ditendang: <b>${stats.usersKicked}</b>
 Pengguna Dibisukan: <b>${stats.usersMuted}</b>
 Spam Diblokir: <b>${stats.spamBlocked}</b>
-Wajib Gabung Diblokir: <b>${stats.forceJoinBlocked}</b>`;
+Wajib Sub Diblokir: <b>${stats.forceJoinBlocked}</b>`;
 
       await bot!.sendMessage(msg.chat.id, text, { parse_mode: "HTML" });
     } catch (err) {
@@ -829,7 +875,7 @@ Wajib Gabung Diblokir: <b>${stats.forceJoinBlocked}</b>`;
       let rulesText = `<b>Aturan Grup ${escapeHtml(msg.chat.title || "")}</b>\n\n`;
 
       if (settings?.forceJoinEnabled && channels.length > 0) {
-        rulesText += `- Wajib bergabung ke: ${channels.map((c: string) => `@${c}`).join(", ")}\n`;
+        rulesText += `- Wajib subscribe ke: ${channels.map((c: string) => `@${c}`).join(", ")}\n`;
       }
       if (settings?.antiSpamEnabled) {
         rulesText += `- Dilarang spam (maks ${settings.antiSpamMaxMessages} pesan/10 detik)\n`;
@@ -876,8 +922,8 @@ Wajib Gabung Diblokir: <b>${stats.forceJoinBlocked}</b>`;
     }
   });
 
-  // /setforcejoin - Tambah channel wajib gabung
-  bot.onText(/\/setforcejoin (.+)/, async (msg, match) => {
+  // /setforcesub - Tambah channel wajib sub
+  bot.onText(/\/setforcesub (.+)/, async (msg, match) => {
     try {
       if (!msg.from || msg.chat.type === "private") return;
       if (!(await isAdmin(msg.chat.id, msg.from.id)) && !isBotOwner(msg.from.id)) {
@@ -893,7 +939,7 @@ Wajib Gabung Diblokir: <b>${stats.forceJoinBlocked}</b>`;
       const current = (settings?.forceJoinChannels as string[]) ?? [];
 
       if (current.includes(channel)) {
-        await bot!.sendMessage(msg.chat.id, `Channel @${channel} sudah ada di daftar wajib gabung.`);
+        await bot!.sendMessage(msg.chat.id, `Channel @${channel} sudah ada di daftar wajib sub.`);
         return;
       }
 
@@ -904,15 +950,15 @@ Wajib Gabung Diblokir: <b>${stats.forceJoinBlocked}</b>`;
 
       await bot!.sendMessage(
         msg.chat.id,
-        `Channel @${channel} berhasil ditambahkan ke daftar wajib gabung.\nWajib gabung telah diaktifkan.`,
+        `Channel @${channel} berhasil ditambahkan ke daftar wajib sub.\nForce Sub telah diaktifkan.`,
       );
     } catch (err) {
-      console.error("Error handling /setforcejoin:", err);
+      console.error("Error handling /setforcesub:", err);
     }
   });
 
-  // /delforcejoin - Hapus channel wajib gabung
-  bot.onText(/\/delforcejoin (.+)/, async (msg, match) => {
+  // /delforcesub - Hapus channel wajib sub
+  bot.onText(/\/delforcesub (.+)/, async (msg, match) => {
     try {
       if (!msg.from || msg.chat.type === "private") return;
       if (!(await isAdmin(msg.chat.id, msg.from.id)) && !isBotOwner(msg.from.id)) {
@@ -927,7 +973,7 @@ Wajib Gabung Diblokir: <b>${stats.forceJoinBlocked}</b>`;
       const current = (settings?.forceJoinChannels as string[]) ?? [];
 
       if (!current.includes(channel)) {
-        await bot!.sendMessage(msg.chat.id, `Channel @${channel} tidak ditemukan di daftar wajib gabung.`);
+        await bot!.sendMessage(msg.chat.id, `Channel @${channel} tidak ditemukan di daftar wajib sub.`);
         return;
       }
 
@@ -936,10 +982,10 @@ Wajib Gabung Diblokir: <b>${stats.forceJoinBlocked}</b>`;
 
       await bot!.sendMessage(
         msg.chat.id,
-        `Channel @${channel} berhasil dihapus dari daftar wajib gabung.${updated.length === 0 ? "\nTidak ada channel tersisa." : ""}`,
+        `Channel @${channel} berhasil dihapus dari daftar wajib sub.${updated.length === 0 ? "\nTidak ada channel tersisa." : ""}`,
       );
     } catch (err) {
-      console.error("Error handling /delforcejoin:", err);
+      console.error("Error handling /delforcesub:", err);
     }
   });
 
@@ -1642,7 +1688,7 @@ Wajib Gabung Diblokir: <b>${stats.forceJoinBlocked}</b>`;
   });
 
   // /owner - Panel pemilik bot
-  bot.onText(/\/owner/, async (msg) => {
+  bot.onText(/\/(owner|menuowner)/, async (msg) => {
     try {
       if (!msg.from) return;
 
@@ -1651,14 +1697,7 @@ Wajib Gabung Diblokir: <b>${stats.forceJoinBlocked}</b>`;
         return;
       }
 
-      const allGroups = await storage.getGroups();
-
-      const text = `<b>Panel Pemilik Bot</b>
-
-Total Grup: <b>${allGroups.length}</b>
-Pemilik: ${getUserMention(msg.from)}
-
-Pilih menu di bawah:`;
+      const text = await buildOwnerPanelText(msg.from);
 
       await bot!.sendMessage(msg.chat.id, text, {
         parse_mode: "HTML",
@@ -1734,7 +1773,7 @@ Pilih menu di bawah:`;
         try {
           const pmKb: TelegramBot.InlineKeyboardButton[][] = [
             [{ text: "Pengaturan Fitur", callback_data: `pm_settings_${chatId}` }],
-            [{ text: "Wajib Gabung", callback_data: `pm_forcejoin_${chatId}` },
+            [{ text: "Wajib Sub", callback_data: `pm_forcejoin_${chatId}` },
              { text: "Filter Kata", callback_data: `pm_wordfilter_${chatId}` }],
             [{ text: "Peringatan", callback_data: `pm_warnings_${chatId}` },
              { text: "Statistik", callback_data: `pm_stats_${chatId}` }],
@@ -1801,7 +1840,7 @@ Pilih menu di bawah:`;
         const settings = await storage.getSettings(groupChatId);
 
         if (!settings?.forceJoinEnabled || !settings.forceJoinChannels?.length) {
-          await bot!.answerCallbackQuery(query.id, { text: "Wajib gabung tidak aktif.", show_alert: true });
+          await bot!.answerCallbackQuery(query.id, { text: "Force Sub tidak aktif.", show_alert: true });
           return;
         }
 
@@ -1820,10 +1859,10 @@ Pilih menu di bawah:`;
         }
 
         if (allJoined) {
-          await bot!.answerCallbackQuery(query.id, { text: "Terverifikasi! Kamu sudah bergabung ke semua channel. Silakan kirim pesan.", show_alert: true });
+          await bot!.answerCallbackQuery(query.id, { text: "Terverifikasi! Kamu sudah subscribe ke semua channel. Silakan kirim pesan.", show_alert: true });
           try { await bot!.deleteMessage(chatId, msgId); } catch {}
         } else {
-          await bot!.answerCallbackQuery(query.id, { text: "Kamu belum bergabung ke semua channel yang diwajibkan.", show_alert: true });
+          await bot!.answerCallbackQuery(query.id, { text: "Kamu belum subscribe ke semua channel yang diwajibkan.", show_alert: true });
         }
         return;
       }
@@ -1915,8 +1954,8 @@ Pilih menu di bawah:`;
           `<b>/settings</b> - Lihat pengaturan saat ini\n` +
           `<b>/stats</b> - Lihat statistik grup\n` +
           `<b>/setwelcome</b> [pesan] - Atur sambutan\n` +
-          `<b>/setforcejoin</b> [username] - Tambah channel wajib\n` +
-          `<b>/delforcejoin</b> [username] - Hapus channel wajib\n` +
+          `<b>/setforcesub</b> [username] - Tambah channel wajib\n` +
+          `<b>/delforcesub</b> [username] - Hapus channel wajib\n` +
           `<b>/addword</b> [kata] - Tambah kata terlarang\n` +
           `<b>/delword</b> [kata] - Hapus kata terlarang\n\n` +
           `<i>Gunakan {user} untuk nama pengguna, {group} untuk nama grup di pesan sambutan.</i>`,
@@ -1949,11 +1988,11 @@ Pilih menu di bawah:`;
 
       if (data === "start_owner") {
         if (!isBotOwner(query.from.id)) { await bot!.answerCallbackQuery(query.id, { text: "Hanya pemilik bot.", show_alert: true }); return; }
-        const allGroups = await storage.getGroups();
-        await bot!.editMessageText(
-          `<b>Panel Pemilik Bot</b>\n\nTotal Grup: <b>${allGroups.length}</b>\nPemilik: ${getUserMention(query.from)}\n\nPilih menu di bawah:`,
-          { chat_id: chatId, message_id: msgId, parse_mode: "HTML", reply_markup: { inline_keyboard: buildOwnerMenuKeyboard() } }
-        );
+        const text = await buildOwnerPanelText(query.from);
+        await bot!.editMessageText(text, {
+          chat_id: chatId, message_id: msgId, parse_mode: "HTML",
+          reply_markup: { inline_keyboard: buildOwnerMenuKeyboard() }
+        });
         await bot!.answerCallbackQuery(query.id);
         return;
       }
@@ -2041,7 +2080,7 @@ Pilih menu di bawah:`;
         if (!settings) { await bot!.answerCallbackQuery(query.id, { text: "Tidak ditemukan.", show_alert: true }); return; }
         const group = await storage.getGroup(groupId);
         await bot!.editMessageText(
-          `<b>Wajib Gabung</b>\n<i>${escapeHtml(group?.title || "Grup")}</i>\n\nTambah channel: <code>/setforcejoin username</code> di grup`,
+          `<b>Wajib Sub</b>\n<i>${escapeHtml(group?.title || "Grup")}</i>\n\nTambah channel: <code>/setforcesub username</code> di grup`,
           { chat_id: chatId, message_id: msgId, parse_mode: "HTML", reply_markup: { inline_keyboard: buildForceJoinKeyboard(groupId, settings, "pmtoggle", "pmremovech") } }
         );
         await bot!.answerCallbackQuery(query.id);
@@ -2116,14 +2155,14 @@ Pilih menu di bawah:`;
         const labelMap: Record<string, string> = {
           welcomeEnabled: "Sambutan", antiSpamEnabled: "Anti-Spam", antiLinkEnabled: "Anti-Link",
           wordFilterEnabled: "Filter Kata", antiFloodEnabled: "Anti-Flood", muteNewMembers: "Mute Baru",
-          forceJoinEnabled: "Wajib Gabung", aiModeratorEnabled: "AI Moderator",
+          forceJoinEnabled: "Wajib Sub", aiModeratorEnabled: "AI Moderator",
         };
         await bot!.answerCallbackQuery(query.id, { text: `${labelMap[field]} ${!currentVal ? "diaktifkan" : "dinonaktifkan"}.` });
 
         const group = await storage.getGroup(groupId);
         if (field === "forceJoinEnabled") {
           await bot!.editMessageText(
-            `<b>Wajib Gabung</b>\n<i>${escapeHtml(group?.title || "Grup")}</i>\n\nTambah channel: <code>/setforcejoin username</code> di grup`,
+            `<b>Wajib Sub</b>\n<i>${escapeHtml(group?.title || "Grup")}</i>\n\nTambah channel: <code>/setforcesub username</code> di grup`,
             { chat_id: chatId, message_id: msgId, parse_mode: "HTML", reply_markup: { inline_keyboard: buildForceJoinKeyboard(groupId, updated, "pmtoggle", "pmremovech", "pmaddch") } }
           );
         } else if (field === "wordFilterEnabled") {
@@ -2189,7 +2228,7 @@ Pilih menu di bawah:`;
         const group = await storage.getGroup(groupId);
         await bot!.answerCallbackQuery(query.id, { text: `@${channel} dihapus.` });
         await bot!.editMessageText(
-          `<b>Wajib Gabung</b>\n<i>${escapeHtml(group?.title || "Grup")}</i>\n\nTambah channel: <code>/setforcejoin username</code> di grup`,
+          `<b>Wajib Sub</b>\n<i>${escapeHtml(group?.title || "Grup")}</i>\n\nTambah channel: <code>/setforcesub username</code> di grup`,
           { chat_id: chatId, message_id: msgId, parse_mode: "HTML", reply_markup: { inline_keyboard: buildForceJoinKeyboard(groupId, updated, "pmtoggle", "pmremovech") } }
         );
         return;
@@ -2229,7 +2268,7 @@ Pilih menu di bawah:`;
         const settings = await storage.getSettings(groupId);
         if (!settings) { await bot!.answerCallbackQuery(query.id, { text: "Tidak ditemukan.", show_alert: true }); return; }
         await bot!.editMessageText(
-          `<b>Wajib Gabung</b>\n\nTambah: <code>/setforcejoin username</code>\nHapus: <code>/delforcejoin username</code>`,
+          `<b>Wajib Sub</b>\n\nTambah: <code>/setforcesub username</code>\nHapus: <code>/delforcesub username</code>`,
           { chat_id: chatId, message_id: msgId, parse_mode: "HTML", reply_markup: { inline_keyboard: buildForceJoinKeyboard(groupId, settings) } }
         );
         await bot!.answerCallbackQuery(query.id);
@@ -2305,13 +2344,13 @@ Pilih menu di bawah:`;
         const labelMap: Record<string, string> = {
           welcomeEnabled: "Sambutan", antiSpamEnabled: "Anti-Spam", antiLinkEnabled: "Anti-Link",
           wordFilterEnabled: "Filter Kata", antiFloodEnabled: "Anti-Flood", muteNewMembers: "Mute Baru",
-          forceJoinEnabled: "Wajib Gabung", aiModeratorEnabled: "AI Moderator",
+          forceJoinEnabled: "Wajib Sub", aiModeratorEnabled: "AI Moderator",
         };
         await bot!.answerCallbackQuery(query.id, { text: `${labelMap[field]} ${!currentVal ? "diaktifkan" : "dinonaktifkan"}.` });
 
         if (field === "forceJoinEnabled") {
           await bot!.editMessageText(
-            `<b>Wajib Gabung</b>\n\nTambah: <code>/setforcejoin username</code>\nHapus: <code>/delforcejoin username</code>`,
+            `<b>Wajib Sub</b>\n\nTambah: <code>/setforcesub username</code>\nHapus: <code>/delforcesub username</code>`,
             { chat_id: chatId, message_id: msgId, parse_mode: "HTML", reply_markup: { inline_keyboard: buildForceJoinKeyboard(groupId, updated) } }
           );
         } else if (field === "wordFilterEnabled") {
@@ -2364,13 +2403,13 @@ Pilih menu di bawah:`;
 
       // Add channel prompt (in-group)
       if (data.startsWith("addchannel_")) {
-        await bot!.answerCallbackQuery(query.id, { text: "Kirim perintah:\n/setforcejoin username\n\nContoh: /setforcejoin mychannel", show_alert: true });
+        await bot!.answerCallbackQuery(query.id, { text: "Kirim perintah:\n/setforcesub username\n\nContoh: /setforcesub mychannel", show_alert: true });
         return;
       }
 
       // Add channel prompt (PM)
       if (data.startsWith("pmaddch_")) {
-        await bot!.answerCallbackQuery(query.id, { text: "Kirim di grup:\n/setforcejoin username\n\nContoh: /setforcejoin mychannel", show_alert: true });
+        await bot!.answerCallbackQuery(query.id, { text: "Kirim di grup:\n/setforcesub username\n\nContoh: /setforcesub mychannel", show_alert: true });
         return;
       }
 
@@ -2433,7 +2472,7 @@ Pilih menu di bawah:`;
         if (!updated) return;
         await bot!.answerCallbackQuery(query.id, { text: `@${channel} dihapus.` });
         await bot!.editMessageText(
-          `<b>Wajib Gabung</b>\n\nTambah: <code>/setforcejoin username</code>\nHapus: <code>/delforcejoin username</code>`,
+          `<b>Wajib Sub</b>\n\nTambah: <code>/setforcesub username</code>\nHapus: <code>/delforcesub username</code>`,
           { chat_id: chatId, message_id: msgId, parse_mode: "HTML", reply_markup: { inline_keyboard: buildForceJoinKeyboard(groupId, updated) } }
         );
         return;
@@ -2479,8 +2518,10 @@ Pilih menu di bawah:`;
         }
 
         const allStats = await storage.getAllStats();
+        const allGroups = await storage.getGroups();
+
         let totalMessages = 0, totalDeleted = 0, totalWarned = 0, totalBanned = 0;
-        let totalKicked = 0, totalMuted = 0, totalSpam = 0, totalForceJoin = 0;
+        let totalKicked = 0, totalMuted = 0, totalSpam = 0, totalForceSub = 0;
 
         allStats.forEach(s => {
           totalMessages += s.messagesProcessed ?? 0;
@@ -2490,23 +2531,28 @@ Pilih menu di bawah:`;
           totalKicked += s.usersKicked ?? 0;
           totalMuted += s.usersMuted ?? 0;
           totalSpam += s.spamBlocked ?? 0;
-          totalForceJoin += s.forceJoinBlocked ?? 0;
+          totalForceSub += s.forceJoinBlocked ?? 0;
         });
 
-        const allGroups = await storage.getGroups();
+        const activeGroups = allGroups.filter(g => g.isActive).length;
 
         const text = `<b>Statistik Global Bot</b>
 
+<b>Ringkasan:</b>
 Total Grup: <b>${allGroups.length}</b>
+Grup Aktif: <b>${activeGroups}</b>
 
+<b>Moderasi:</b>
 Pesan Diproses: <b>${totalMessages}</b>
 Pesan Dihapus: <b>${totalDeleted}</b>
 Pengguna Diperingatkan: <b>${totalWarned}</b>
 Pengguna Dibanned: <b>${totalBanned}</b>
 Pengguna Ditendang: <b>${totalKicked}</b>
 Pengguna Dibisukan: <b>${totalMuted}</b>
+
+<b>Filter:</b>
 Spam Diblokir: <b>${totalSpam}</b>
-Wajib Gabung Diblokir: <b>${totalForceJoin}</b>`;
+Force Sub Diblokir: <b>${totalForceSub}</b>`;
 
         await bot!.editMessageText(text, {
           chat_id: chatId,
@@ -2550,7 +2596,7 @@ Wajib Gabung Diblokir: <b>${totalForceJoin}</b>`;
           text += "Belum ada aktivitas.";
         } else {
           for (const log of logs) {
-            const actionLabel: Record<string, string> = { warn: "Peringatan", ban: "Banned", kick: "Tendang", mute: "Bisukan", delete: "Hapus", spam_blocked: "Spam", link_blocked: "Link", word_filtered: "Filter Kata", flood_blocked: "Flood", force_join: "Wajib Gabung", ai_moderated: "AI Moderasi" };
+            const actionLabel: Record<string, string> = { warn: "Peringatan", ban: "Banned", kick: "Tendang", mute: "Bisukan", delete: "Hapus", spam_blocked: "Spam", link_blocked: "Link", word_filtered: "Filter Kata", flood_blocked: "Flood", force_join: "Wajib Sub", ai_moderated: "AI Moderasi" };
             const d = log.createdAt ? new Date(log.createdAt) : new Date();
             text += `<code>${d.toLocaleString("id-ID", { timeZone: "Asia/Jakarta" })}</code>\n[${actionLabel[log.action] || log.action}] ${log.details || ""}\n\n`;
           }
@@ -2563,17 +2609,56 @@ Wajib Gabung Diblokir: <b>${totalForceJoin}</b>`;
         return;
       }
 
-      // Owner broadcast prompt
-      if (data === "owner_broadcast") {
+      // Owner broadcast menu with button
+      if (data === "owner_broadcast_menu") {
         if (!isBotOwner(query.from.id)) {
           await bot!.answerCallbackQuery(query.id, { text: "Hanya pemilik bot.", show_alert: true });
           return;
         }
 
-        await bot!.answerCallbackQuery(query.id, {
-          text: "Gunakan perintah:\n/broadcast pesan_anda\n\nContoh: /broadcast Halo semua!",
-          show_alert: true,
+        const allGroups = await storage.getGroups();
+        const activeCount = allGroups.filter(g => g.isActive).length;
+
+        await bot!.editMessageText(
+          `<b>Broadcast Pesan</b>\n\n` +
+          `Target: <b>${activeCount}</b> grup aktif dari <b>${allGroups.length}</b> total\n\n` +
+          `<b>Cara Broadcast:</b>\n` +
+          `Kirim perintah di chat ini:\n` +
+          `<code>/broadcast pesan anda di sini</code>\n\n` +
+          `<b>Contoh:</b>\n` +
+          `<code>/broadcast Halo semua! Ada update baru dari bot.</code>\n\n` +
+          `<i>Pesan akan dikirim ke semua grup yang terdaftar.</i>\n` +
+          `<i>Support HTML formatting (bold, italic, link, dll).</i>`,
+          {
+            chat_id: chatId,
+            message_id: msgId,
+            parse_mode: "HTML",
+            reply_markup: {
+              inline_keyboard: [
+                [{ text: "Kembali", callback_data: `owner_back` }],
+              ],
+            },
+          }
+        );
+        await bot!.answerCallbackQuery(query.id);
+        return;
+      }
+
+      // Owner refresh panel
+      if (data === "owner_refresh") {
+        if (!isBotOwner(query.from.id)) {
+          await bot!.answerCallbackQuery(query.id, { text: "Hanya pemilik bot.", show_alert: true });
+          return;
+        }
+
+        const text = await buildOwnerPanelText(query.from);
+        await bot!.editMessageText(text, {
+          chat_id: chatId,
+          message_id: msgId,
+          parse_mode: "HTML",
+          reply_markup: { inline_keyboard: buildOwnerMenuKeyboard() },
         });
+        await bot!.answerCallbackQuery(query.id, { text: "Panel diperbarui!", show_alert: false });
         return;
       }
 
@@ -2584,16 +2669,13 @@ Wajib Gabung Diblokir: <b>${totalForceJoin}</b>`;
           return;
         }
 
-        const allGroups = await storage.getGroups();
-        await bot!.editMessageText(
-          `<b>Panel Pemilik Bot</b>\n\nTotal Grup: <b>${allGroups.length}</b>\nPemilik: ${getUserMention(query.from)}\n\nPilih menu di bawah:`,
-          {
-            chat_id: chatId,
-            message_id: msgId,
-            parse_mode: "HTML",
-            reply_markup: { inline_keyboard: buildOwnerMenuKeyboard() },
-          }
-        );
+        const text = await buildOwnerPanelText(query.from);
+        await bot!.editMessageText(text, {
+          chat_id: chatId,
+          message_id: msgId,
+          parse_mode: "HTML",
+          reply_markup: { inline_keyboard: buildOwnerMenuKeyboard() },
+        });
         await bot!.answerCallbackQuery(query.id);
         return;
       }

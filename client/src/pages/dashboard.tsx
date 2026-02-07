@@ -44,7 +44,7 @@ export default function DashboardPage() {
     { label: "Users Warned", value: statsOverview?.usersWarned ?? 0, icon: AlertTriangle, color: "text-yellow-500" },
     { label: "Users Banned", value: statsOverview?.usersBanned ?? 0, icon: Ban, color: "text-red-500" },
     { label: "Spam Blocked", value: statsOverview?.spamBlocked ?? 0, icon: ShieldAlert, color: "text-purple-500" },
-    { label: "Force Join Blocked", value: statsOverview?.forceJoinBlocked ?? 0, icon: Lock, color: "text-cyan-500" },
+    { label: "Force Sub Blocked", value: statsOverview?.forceJoinBlocked ?? 0, icon: Lock, color: "text-cyan-500" },
   ];
 
   return (

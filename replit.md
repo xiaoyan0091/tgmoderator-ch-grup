@@ -1,7 +1,7 @@
 # TG Moderator Bot
 
 ## Overview
-A Telegram Group Moderator Bot with a web dashboard. The bot provides comprehensive group moderation features including force join, anti-spam, word filtering, and more. The web dashboard allows managing bot settings for each group. All bot messages are in Indonesian (Bahasa Indonesia).
+A Telegram Group Moderator Bot with a web dashboard. The bot provides comprehensive group moderation features including force sub (subscribe), anti-spam, word filtering, and more. The web dashboard allows managing bot settings for each group. All bot messages are in Indonesian (Bahasa Indonesia).
 
 ## Architecture
 - **Frontend**: React + Vite + TailwindCSS + Shadcn UI
@@ -10,7 +10,7 @@ A Telegram Group Moderator Bot with a web dashboard. The bot provides comprehens
 - **Bot**: node-telegram-bot-api (polling mode)
 
 ## Key Features
-- Force Join/Sub - require users to join channels before chatting
+- Force Sub - require users to subscribe to channels before chatting
 - Welcome Messages - customizable greetings for new members
 - Anti-Spam - message rate limiting
 - Anti-Link - block URL messages
@@ -100,15 +100,14 @@ npm run dev
 
 ### Pengaturan Fitur (Admin)
 - /setwelcome [pesan] - Atur pesan sambutan
-- /setforcejoin [username] - Tambah channel force join
-- /delforcejoin [username] - Hapus channel force join
+- /setforcesub [username] - Tambah channel force sub
+- /delforcesub [username] - Hapus channel force sub
 - /addword [kata] - Tambah kata terlarang
 - /delword [kata] - Hapus kata terlarang
 
 ### Pengaturan via PM
-- /setgroup - Pengaturan grup lengkap via PM dengan tombol inline (pilih grup, toggle fitur, atur peringatan, filter, wajib gabung, statistik)
+- /setgroup - Pengaturan grup lengkap via PM dengan tombol inline (pilih grup, toggle fitur, atur peringatan, filter, wajib sub, statistik)
 
 ### Pemilik Bot
-- /setowner - Tetapkan pemilik bot (sekali pakai)
-- /owner - Panel pemilik bot dengan tombol inline
+- /owner atau /menuowner - Panel pemilik bot dengan status lengkap dan tombol inline
 - /broadcast [pesan] - Kirim pesan ke semua grup
