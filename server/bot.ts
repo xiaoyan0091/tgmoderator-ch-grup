@@ -111,6 +111,77 @@ function isBotOwner(userId: number): boolean {
   return userId === BOT_OWNER_ID;
 }
 
+interface ResolvedTarget {
+  userId: number;
+  displayName: string;
+  mentionHtml: string;
+}
+
+async function resolveTargetUser(
+  msg: TelegramBot.Message,
+  args: string
+): Promise<ResolvedTarget | null> {
+  if (msg.reply_to_message?.from) {
+    const t = msg.reply_to_message.from;
+    return { userId: t.id, displayName: getUserDisplayName(t), mentionHtml: getUserMention(t) };
+  }
+
+  const trimmed = args.trim().split(/\s+/)[0] || "";
+  if (!trimmed) return null;
+
+  if (trimmed.startsWith("@")) {
+    const username = trimmed.substring(1);
+    try {
+      const chat = await bot!.getChat(`@${username}`) as any;
+      if (chat && chat.id) {
+        const name = chat.first_name || username;
+        const lastName = chat.last_name || "";
+        const fullName = lastName ? `${name} ${lastName}` : name;
+        return {
+          userId: chat.id,
+          displayName: `@${username}`,
+          mentionHtml: `<a href="tg://user?id=${chat.id}">${escapeHtml(fullName)}</a>`,
+        };
+      }
+    } catch {
+      try {
+        await bot!.sendMessage(msg.chat.id, `Tidak dapat menemukan pengguna @${escapeHtml(username)}. Coba gunakan user_id.`, { parse_mode: "HTML" });
+      } catch {}
+    }
+    return null;
+  }
+
+  const userId = parseInt(trimmed, 10);
+  if (!isNaN(userId) && userId > 0) {
+    try {
+      const chat = await bot!.getChat(userId) as any;
+      const name = chat.first_name || String(userId);
+      const lastName = chat.last_name || "";
+      const fullName = lastName ? `${name} ${lastName}` : name;
+      const displayName = chat.username ? `@${chat.username}` : fullName;
+      return {
+        userId,
+        displayName,
+        mentionHtml: `<a href="tg://user?id=${userId}">${escapeHtml(fullName)}</a>`,
+      };
+    } catch {
+      return { userId, displayName: String(userId), mentionHtml: `<a href="tg://user?id=${userId}">${userId}</a>` };
+    }
+  }
+
+  return null;
+}
+
+function getArgsAfterTarget(args: string): string {
+  const trimmed = args.trim();
+  if (!trimmed) return "";
+  const parts = trimmed.split(/\s+/);
+  if (parts[0].startsWith("@") || /^\d+$/.test(parts[0])) {
+    return parts.slice(1).join(" ");
+  }
+  return trimmed;
+}
+
 async function ensureGroupAndSettings(chatId: string, title: string) {
   await storage.upsertGroup({ chatId, title, memberCount: 0, isActive: true });
   const settings = await storage.getSettings(chatId);
@@ -1962,51 +2033,59 @@ Wajib Sub Diblokir: <b>${stats.forceJoinBlocked}</b>`;
     }
   });
 
-  // /warn - Beri peringatan
-  bot.onText(/\/warn(.*)/, async (msg, match) => {
+  // /warn - Beri peringatan (reply, user_id, @username)
+  bot.onText(/\/warn(?:\s|$|@)(.*)/, async (msg, match) => {
     try {
       if (!msg.from || msg.chat.type === "private") return;
+
       if (!(await isAdmin(msg.chat.id, msg.from.id)) && !isBotOwner(msg.from.id)) {
         await bot!.sendMessage(msg.chat.id, "Hanya admin yang bisa menggunakan perintah ini.");
         return;
       }
 
-      if (!msg.reply_to_message?.from) {
-        await bot!.sendMessage(msg.chat.id, "Balas pesan pengguna yang ingin diperingatkan.");
+      const args = match?.[1]?.trim() || "";
+      const target = await resolveTargetUser(msg, args);
+
+      if (!target) {
+        await bot!.sendMessage(msg.chat.id,
+          "Balas pesan pengguna, atau gunakan:\n<code>/warn @username alasan</code>\n<code>/warn user_id alasan</code>",
+          { parse_mode: "HTML" }
+        );
         return;
       }
 
-      const target = msg.reply_to_message.from;
-      if (target.is_bot) {
-        await bot!.sendMessage(msg.chat.id, "Tidak bisa memperingatkan bot.");
-        return;
-      }
+      try {
+        const memberInfo = await bot!.getChatMember(msg.chat.id, target.userId);
+        if (memberInfo.user?.is_bot) {
+          await bot!.sendMessage(msg.chat.id, "Tidak bisa memperingatkan bot.");
+          return;
+        }
+      } catch {}
 
-      if (await isAdmin(msg.chat.id, target.id)) {
+      if (await isAdmin(msg.chat.id, target.userId) && !isBotOwner(msg.from.id)) {
         await bot!.sendMessage(msg.chat.id, "Tidak bisa memperingatkan admin.");
         return;
       }
 
-      const reason = match?.[1]?.trim() || "Tidak ada alasan";
+      const reason = msg.reply_to_message?.from ? (args || "Tidak ada alasan") : (getArgsAfterTarget(args) || "Tidak ada alasan");
       const chatId = msg.chat.id.toString();
-      const targetName = getUserDisplayName(target);
       const adminName = getUserDisplayName(msg.from);
 
       await storage.addWarning({
         chatId,
-        odId: target.id.toString(),
-        odName: targetName,
+        odId: target.userId.toString(),
+        odName: target.displayName,
         reason,
         warnedBy: adminName,
       });
 
-      const count = await storage.getWarningCount(chatId, target.id.toString());
+      const count = await storage.getWarningCount(chatId, target.userId.toString());
       const settings = await storage.getSettings(chatId);
       const warnLimit = settings?.warnLimit ?? 3;
 
       await bot!.sendMessage(
         msg.chat.id,
-        `${getUserMention(target)} telah diperingatkan. (<b>${count}/${warnLimit}</b>)\nAlasan: ${escapeHtml(reason)}`,
+        `${target.mentionHtml} telah diperingatkan. (<b>${count}/${warnLimit}</b>)\nAlasan: ${escapeHtml(reason)}`,
         { parse_mode: "HTML" }
       );
 
@@ -2014,21 +2093,21 @@ Wajib Sub Diblokir: <b>${stats.forceJoinBlocked}</b>`;
       await storage.addLog({
         chatId,
         action: "warn",
-        targetUser: targetName,
+        targetUser: target.displayName,
         performedBy: adminName,
         details: `Peringatan ${count}/${warnLimit}: ${reason}`,
       });
 
       if (count >= warnLimit && settings) {
-        await handleWarnAction(msg.chat.id, chatId, target.id, targetName, settings);
+        await handleWarnAction(msg.chat.id, chatId, target.userId, target.displayName, settings);
       }
     } catch (err) {
       console.error("Error handling /warn:", err);
     }
   });
 
-  // /unwarn - Hapus semua peringatan
-  bot.onText(/\/unwarn/, async (msg) => {
+  // /unwarn - Hapus semua peringatan (reply, user_id, @username)
+  bot.onText(/\/unwarn(?:\s|$|@)(.*)/, async (msg, match) => {
     try {
       if (!msg.from || msg.chat.type === "private") return;
       if (!(await isAdmin(msg.chat.id, msg.from.id)) && !isBotOwner(msg.from.id)) {
@@ -2036,26 +2115,29 @@ Wajib Sub Diblokir: <b>${stats.forceJoinBlocked}</b>`;
         return;
       }
 
-      if (!msg.reply_to_message?.from) {
-        await bot!.sendMessage(msg.chat.id, "Balas pesan pengguna untuk menghapus semua peringatannya.");
+      const args = match?.[1]?.trim() || "";
+      const target = await resolveTargetUser(msg, args);
+
+      if (!target) {
+        await bot!.sendMessage(msg.chat.id,
+          "Balas pesan pengguna, atau gunakan:\n<code>/unwarn @username</code>\n<code>/unwarn user_id</code>",
+          { parse_mode: "HTML" }
+        );
         return;
       }
 
-      const target = msg.reply_to_message.from;
       const chatId = msg.chat.id.toString();
-      const targetName = getUserDisplayName(target);
-
-      await storage.clearWarnings(chatId, target.id.toString());
+      await storage.clearWarnings(chatId, target.userId.toString());
       await bot!.sendMessage(
         msg.chat.id,
-        `Semua peringatan untuk ${getUserMention(target)} telah dihapus.`,
+        `Semua peringatan untuk ${target.mentionHtml} telah dihapus.`,
         { parse_mode: "HTML" }
       );
 
       await storage.addLog({
         chatId,
         action: "unwarn",
-        targetUser: targetName,
+        targetUser: target.displayName,
         performedBy: getUserDisplayName(msg.from),
         details: "Semua peringatan dihapus",
       });
@@ -2064,31 +2146,35 @@ Wajib Sub Diblokir: <b>${stats.forceJoinBlocked}</b>`;
     }
   });
 
-  // /warnings - Cek peringatan
-  bot.onText(/\/warnings/, async (msg) => {
+  // /warnings - Cek peringatan (reply, user_id, @username)
+  bot.onText(/\/warnings(?:\s|$|@)(.*)/, async (msg, match) => {
     try {
       if (!msg.from || msg.chat.type === "private") return;
 
-      if (!msg.reply_to_message?.from) {
-        await bot!.sendMessage(msg.chat.id, "Balas pesan pengguna untuk melihat peringatannya.");
-        return;
-      }
+      const args = match?.[1]?.trim() || "";
+      const target = await resolveTargetUser(msg, args);
 
-      const target = msg.reply_to_message.from;
-      const chatId = msg.chat.id.toString();
-      const targetName = getUserDisplayName(target);
-      const warns = await storage.getWarnings(chatId, target.id.toString());
-
-      if (warns.length === 0) {
-        await bot!.sendMessage(
-          msg.chat.id,
-          `${getUserMention(target)} tidak memiliki peringatan.`,
+      if (!target) {
+        await bot!.sendMessage(msg.chat.id,
+          "Balas pesan pengguna, atau gunakan:\n<code>/warnings @username</code>\n<code>/warnings user_id</code>",
           { parse_mode: "HTML" }
         );
         return;
       }
 
-      let text = `<b>Peringatan untuk ${escapeHtml(targetName)}</b> (${warns.length}):\n\n`;
+      const chatId = msg.chat.id.toString();
+      const warns = await storage.getWarnings(chatId, target.userId.toString());
+
+      if (warns.length === 0) {
+        await bot!.sendMessage(
+          msg.chat.id,
+          `${target.mentionHtml} tidak memiliki peringatan.`,
+          { parse_mode: "HTML" }
+        );
+        return;
+      }
+
+      let text = `<b>Peringatan untuk ${escapeHtml(target.displayName)}</b> (${warns.length}):\n\n`;
       warns.forEach((w, i) => {
         text += `${i + 1}. ${escapeHtml(w.reason)} - oleh ${escapeHtml(w.warnedBy)}\n`;
       });
@@ -2099,8 +2185,8 @@ Wajib Sub Diblokir: <b>${stats.forceJoinBlocked}</b>`;
     }
   });
 
-  // /ban - Banned pengguna
-  bot.onText(/\/ban/, async (msg) => {
+  // /ban - Banned pengguna (reply, user_id, @username)
+  bot.onText(/\/ban(?:\s|$|@)(.*)/, async (msg, match) => {
     try {
       if (!msg.from || msg.chat.type === "private") return;
       if (!(await isAdmin(msg.chat.id, msg.from.id)) && !isBotOwner(msg.from.id)) {
@@ -2108,42 +2194,54 @@ Wajib Sub Diblokir: <b>${stats.forceJoinBlocked}</b>`;
         return;
       }
 
-      if (!msg.reply_to_message?.from) {
-        await bot!.sendMessage(msg.chat.id, "Balas pesan pengguna yang ingin di-banned.");
+      const args = match?.[1]?.trim() || "";
+      const target = await resolveTargetUser(msg, args);
+
+      if (!target) {
+        await bot!.sendMessage(msg.chat.id,
+          "Balas pesan pengguna, atau gunakan:\n<code>/ban @username [alasan]</code>\n<code>/ban user_id [alasan]</code>",
+          { parse_mode: "HTML" }
+        );
         return;
       }
 
-      const target = msg.reply_to_message.from;
-      if (await isAdmin(msg.chat.id, target.id)) {
+      try {
+        const memberInfo = await bot!.getChatMember(msg.chat.id, target.userId);
+        if (memberInfo.user?.is_bot) {
+          await bot!.sendMessage(msg.chat.id, "Tidak bisa mem-banned bot.");
+          return;
+        }
+      } catch {}
+
+      if (await isAdmin(msg.chat.id, target.userId) && !isBotOwner(msg.from.id)) {
         await bot!.sendMessage(msg.chat.id, "Tidak bisa mem-banned admin.");
         return;
       }
 
-      const targetName = getUserDisplayName(target);
+      const reason = msg.reply_to_message?.from ? (args || "") : (getArgsAfterTarget(args) || "");
       const chatId = msg.chat.id.toString();
 
-      await bot!.banChatMember(msg.chat.id, target.id);
-      await bot!.sendMessage(
-        msg.chat.id,
-        `${getUserMention(target)} telah <b>dibanned</b> dari grup.`,
-        { parse_mode: "HTML" }
-      );
+      await bot!.banChatMember(msg.chat.id, target.userId);
+
+      let banMsg = `${target.mentionHtml} telah <b>dibanned</b> dari grup.`;
+      if (reason) banMsg += `\nAlasan: ${escapeHtml(reason)}`;
+      await bot!.sendMessage(msg.chat.id, banMsg, { parse_mode: "HTML" });
 
       await storage.incrementStat(chatId, "usersBanned");
       await storage.addLog({
         chatId,
         action: "ban",
-        targetUser: targetName,
+        targetUser: target.displayName,
         performedBy: getUserDisplayName(msg.from),
-        details: "Dibanned oleh admin",
+        details: reason ? `Dibanned: ${reason}` : "Dibanned oleh admin",
       });
     } catch (err) {
       console.error("Error handling /ban:", err);
     }
   });
 
-  // /unban - Buka banned
-  bot.onText(/\/unban/, async (msg) => {
+  // /unban - Buka banned (reply, user_id, @username)
+  bot.onText(/\/unban(?:\s|$|@)(.*)/, async (msg, match) => {
     try {
       if (!msg.from || msg.chat.type === "private") return;
       if (!(await isAdmin(msg.chat.id, msg.from.id)) && !isBotOwner(msg.from.id)) {
@@ -2151,26 +2249,29 @@ Wajib Sub Diblokir: <b>${stats.forceJoinBlocked}</b>`;
         return;
       }
 
-      if (!msg.reply_to_message?.from) {
-        await bot!.sendMessage(msg.chat.id, "Balas pesan pengguna yang ingin dibuka banned-nya.");
+      const args = match?.[1]?.trim() || "";
+      const target = await resolveTargetUser(msg, args);
+
+      if (!target) {
+        await bot!.sendMessage(msg.chat.id,
+          "Balas pesan pengguna, atau gunakan:\n<code>/unban @username</code>\n<code>/unban user_id</code>",
+          { parse_mode: "HTML" }
+        );
         return;
       }
 
-      const target = msg.reply_to_message.from;
-      const targetName = getUserDisplayName(target);
       const chatId = msg.chat.id.toString();
-
-      await bot!.unbanChatMember(msg.chat.id, target.id);
+      await bot!.unbanChatMember(msg.chat.id, target.userId);
       await bot!.sendMessage(
         msg.chat.id,
-        `${getUserMention(target)} telah <b>dibuka banned-nya</b>.`,
+        `${target.mentionHtml} telah <b>dibuka banned-nya</b>.`,
         { parse_mode: "HTML" }
       );
 
       await storage.addLog({
         chatId,
         action: "unban",
-        targetUser: targetName,
+        targetUser: target.displayName,
         performedBy: getUserDisplayName(msg.from),
         details: "Dibuka banned-nya oleh admin",
       });
@@ -2179,8 +2280,8 @@ Wajib Sub Diblokir: <b>${stats.forceJoinBlocked}</b>`;
     }
   });
 
-  // /kick - Tendang pengguna
-  bot.onText(/\/kick/, async (msg) => {
+  // /kick - Tendang pengguna (reply, user_id, @username)
+  bot.onText(/\/kick(?:\s|$|@)(.*)/, async (msg, match) => {
     try {
       if (!msg.from || msg.chat.type === "private") return;
       if (!(await isAdmin(msg.chat.id, msg.from.id)) && !isBotOwner(msg.from.id)) {
@@ -2188,69 +2289,94 @@ Wajib Sub Diblokir: <b>${stats.forceJoinBlocked}</b>`;
         return;
       }
 
-      if (!msg.reply_to_message?.from) {
-        await bot!.sendMessage(msg.chat.id, "Balas pesan pengguna yang ingin ditendang.");
+      const args = match?.[1]?.trim() || "";
+      const target = await resolveTargetUser(msg, args);
+
+      if (!target) {
+        await bot!.sendMessage(msg.chat.id,
+          "Balas pesan pengguna, atau gunakan:\n<code>/kick @username [alasan]</code>\n<code>/kick user_id [alasan]</code>",
+          { parse_mode: "HTML" }
+        );
         return;
       }
 
-      const target = msg.reply_to_message.from;
-      if (await isAdmin(msg.chat.id, target.id)) {
+      try {
+        const memberInfo = await bot!.getChatMember(msg.chat.id, target.userId);
+        if (memberInfo.user?.is_bot) {
+          await bot!.sendMessage(msg.chat.id, "Tidak bisa menendang bot.");
+          return;
+        }
+      } catch {}
+
+      if (await isAdmin(msg.chat.id, target.userId) && !isBotOwner(msg.from.id)) {
         await bot!.sendMessage(msg.chat.id, "Tidak bisa menendang admin.");
         return;
       }
 
-      const targetName = getUserDisplayName(target);
+      const reason = msg.reply_to_message?.from ? (args || "") : (getArgsAfterTarget(args) || "");
       const chatId = msg.chat.id.toString();
 
-      await bot!.banChatMember(msg.chat.id, target.id);
-      await bot!.unbanChatMember(msg.chat.id, target.id);
-      await bot!.sendMessage(
-        msg.chat.id,
-        `${getUserMention(target)} telah <b>ditendang</b> dari grup.`,
-        { parse_mode: "HTML" }
-      );
+      await bot!.banChatMember(msg.chat.id, target.userId);
+      await bot!.unbanChatMember(msg.chat.id, target.userId);
+
+      let kickMsg = `${target.mentionHtml} telah <b>ditendang</b> dari grup.`;
+      if (reason) kickMsg += `\nAlasan: ${escapeHtml(reason)}`;
+      await bot!.sendMessage(msg.chat.id, kickMsg, { parse_mode: "HTML" });
 
       await storage.incrementStat(chatId, "usersKicked");
       await storage.addLog({
         chatId,
         action: "kick",
-        targetUser: targetName,
+        targetUser: target.displayName,
         performedBy: getUserDisplayName(msg.from),
-        details: "Ditendang oleh admin",
+        details: reason ? `Ditendang: ${reason}` : "Ditendang oleh admin",
       });
     } catch (err) {
       console.error("Error handling /kick:", err);
     }
   });
 
-  // /mute - Bisukan pengguna
-  bot.onText(/\/mute(.*)/, async (msg, match) => {
+  // /mute - Bisukan pengguna (reply, user_id, @username)
+  bot.onText(/\/mute(?:\s|$|@)(.*)/, async (msg, match) => {
     try {
       if (!msg.from || msg.chat.type === "private") return;
+
       if (!(await isAdmin(msg.chat.id, msg.from.id)) && !isBotOwner(msg.from.id)) {
         await bot!.sendMessage(msg.chat.id, "Hanya admin yang bisa menggunakan perintah ini.");
         return;
       }
 
-      if (!msg.reply_to_message?.from) {
-        await bot!.sendMessage(msg.chat.id, "Balas pesan pengguna yang ingin dibisukan.\n\nContoh: /mute 30 (bisukan 30 menit)");
+      const args = match?.[1]?.trim() || "";
+      const target = await resolveTargetUser(msg, args);
+
+      if (!target) {
+        await bot!.sendMessage(msg.chat.id,
+          "Balas pesan pengguna, atau gunakan:\n<code>/mute @username [menit]</code>\n<code>/mute user_id [menit]</code>",
+          { parse_mode: "HTML" }
+        );
         return;
       }
 
-      const target = msg.reply_to_message.from;
-      if (await isAdmin(msg.chat.id, target.id)) {
+      try {
+        const memberInfo = await bot!.getChatMember(msg.chat.id, target.userId);
+        if (memberInfo.user?.is_bot) {
+          await bot!.sendMessage(msg.chat.id, "Tidak bisa membisukan bot.");
+          return;
+        }
+      } catch {}
+
+      if (await isAdmin(msg.chat.id, target.userId) && !isBotOwner(msg.from.id)) {
         await bot!.sendMessage(msg.chat.id, "Tidak bisa membisukan admin.");
         return;
       }
 
-      const targetName = getUserDisplayName(target);
-      const chatId = msg.chat.id.toString();
-
-      const durationMin = parseInt(match?.[1]?.trim() || "60", 10);
+      const remainingArgs = msg.reply_to_message?.from ? args : getArgsAfterTarget(args);
+      const durationMin = parseInt(remainingArgs || "60", 10);
       const durationSec = isNaN(durationMin) ? 3600 : durationMin * 60;
       const displayMin = isNaN(durationMin) ? 60 : durationMin;
+      const chatId = msg.chat.id.toString();
 
-      await bot!.restrictChatMember(msg.chat.id, target.id, {
+      await bot!.restrictChatMember(msg.chat.id, target.userId, {
         permissions: {
           can_send_messages: false,
           can_send_media_messages: false,
@@ -2262,7 +2388,7 @@ Wajib Sub Diblokir: <b>${stats.forceJoinBlocked}</b>`;
 
       await bot!.sendMessage(
         msg.chat.id,
-        `${getUserMention(target)} telah <b>dibisukan</b> selama ${displayMin} menit.`,
+        `${target.mentionHtml} telah <b>dibisukan</b> selama ${displayMin} menit.`,
         { parse_mode: "HTML" }
       );
 
@@ -2270,7 +2396,7 @@ Wajib Sub Diblokir: <b>${stats.forceJoinBlocked}</b>`;
       await storage.addLog({
         chatId,
         action: "mute",
-        targetUser: targetName,
+        targetUser: target.displayName,
         performedBy: getUserDisplayName(msg.from),
         details: `Dibisukan selama ${displayMin} menit`,
       });
@@ -2279,8 +2405,8 @@ Wajib Sub Diblokir: <b>${stats.forceJoinBlocked}</b>`;
     }
   });
 
-  // /unmute - Buka bisukan
-  bot.onText(/\/unmute/, async (msg) => {
+  // /unmute - Buka bisukan (reply, user_id, @username)
+  bot.onText(/\/unmute(?:\s|$|@)(.*)/, async (msg, match) => {
     try {
       if (!msg.from || msg.chat.type === "private") return;
       if (!(await isAdmin(msg.chat.id, msg.from.id)) && !isBotOwner(msg.from.id)) {
@@ -2288,16 +2414,19 @@ Wajib Sub Diblokir: <b>${stats.forceJoinBlocked}</b>`;
         return;
       }
 
-      if (!msg.reply_to_message?.from) {
-        await bot!.sendMessage(msg.chat.id, "Balas pesan pengguna yang ingin dibuka bisukannya.");
+      const args = match?.[1]?.trim() || "";
+      const target = await resolveTargetUser(msg, args);
+
+      if (!target) {
+        await bot!.sendMessage(msg.chat.id,
+          "Balas pesan pengguna, atau gunakan:\n<code>/unmute @username</code>\n<code>/unmute user_id</code>",
+          { parse_mode: "HTML" }
+        );
         return;
       }
 
-      const target = msg.reply_to_message.from;
-      const targetName = getUserDisplayName(target);
       const chatId = msg.chat.id.toString();
-
-      await bot!.restrictChatMember(msg.chat.id, target.id, {
+      await bot!.restrictChatMember(msg.chat.id, target.userId, {
         permissions: {
           can_send_messages: true,
           can_send_media_messages: true,
@@ -2308,14 +2437,14 @@ Wajib Sub Diblokir: <b>${stats.forceJoinBlocked}</b>`;
 
       await bot!.sendMessage(
         msg.chat.id,
-        `${getUserMention(target)} telah <b>dibuka bisukannya</b>.`,
+        `${target.mentionHtml} telah <b>dibuka bisukannya</b>.`,
         { parse_mode: "HTML" }
       );
 
       await storage.addLog({
         chatId,
         action: "unmute",
-        targetUser: targetName,
+        targetUser: target.displayName,
         performedBy: getUserDisplayName(msg.from),
         details: "Dibuka bisukannya oleh admin",
       });
@@ -2444,8 +2573,8 @@ Wajib Sub Diblokir: <b>${stats.forceJoinBlocked}</b>`;
     }
   });
 
-  // /promote - Jadikan admin
-  bot.onText(/\/promote/, async (msg) => {
+  // /promote - Jadikan admin (reply, user_id, @username)
+  bot.onText(/\/promote(?:\s|$|@)(.*)/, async (msg, match) => {
     try {
       if (!msg.from || msg.chat.type === "private") return;
       if (!(await isCreator(msg.chat.id, msg.from.id)) && !isBotOwner(msg.from.id)) {
@@ -2453,13 +2582,18 @@ Wajib Sub Diblokir: <b>${stats.forceJoinBlocked}</b>`;
         return;
       }
 
-      if (!msg.reply_to_message?.from) {
-        await bot!.sendMessage(msg.chat.id, "Balas pesan pengguna yang ingin dijadikan admin.");
+      const args = match?.[1]?.trim() || "";
+      const target = await resolveTargetUser(msg, args);
+
+      if (!target) {
+        await bot!.sendMessage(msg.chat.id,
+          "Balas pesan pengguna, atau gunakan:\n<code>/promote @username</code>\n<code>/promote user_id</code>",
+          { parse_mode: "HTML" }
+        );
         return;
       }
 
-      const target = msg.reply_to_message.from;
-      await bot!.promoteChatMember(msg.chat.id, target.id, {
+      await bot!.promoteChatMember(msg.chat.id, target.userId, {
         can_delete_messages: true,
         can_restrict_members: true,
         can_pin_messages: true,
@@ -2468,14 +2602,14 @@ Wajib Sub Diblokir: <b>${stats.forceJoinBlocked}</b>`;
 
       await bot!.sendMessage(
         msg.chat.id,
-        `${getUserMention(target)} telah <b>dijadikan admin</b>.`,
+        `${target.mentionHtml} telah <b>dijadikan admin</b>.`,
         { parse_mode: "HTML" }
       );
 
       await storage.addLog({
         chatId: msg.chat.id.toString(),
         action: "promote",
-        targetUser: getUserDisplayName(target),
+        targetUser: target.displayName,
         performedBy: getUserDisplayName(msg.from),
         details: "Dijadikan admin",
       });
@@ -2485,8 +2619,8 @@ Wajib Sub Diblokir: <b>${stats.forceJoinBlocked}</b>`;
     }
   });
 
-  // /demote - Cabut admin
-  bot.onText(/\/demote/, async (msg) => {
+  // /demote - Cabut admin (reply, user_id, @username)
+  bot.onText(/\/demote(?:\s|$|@)(.*)/, async (msg, match) => {
     try {
       if (!msg.from || msg.chat.type === "private") return;
       if (!(await isCreator(msg.chat.id, msg.from.id)) && !isBotOwner(msg.from.id)) {
@@ -2494,13 +2628,18 @@ Wajib Sub Diblokir: <b>${stats.forceJoinBlocked}</b>`;
         return;
       }
 
-      if (!msg.reply_to_message?.from) {
-        await bot!.sendMessage(msg.chat.id, "Balas pesan admin yang ingin dicabut jabatannya.");
+      const args = match?.[1]?.trim() || "";
+      const target = await resolveTargetUser(msg, args);
+
+      if (!target) {
+        await bot!.sendMessage(msg.chat.id,
+          "Balas pesan pengguna, atau gunakan:\n<code>/demote @username</code>\n<code>/demote user_id</code>",
+          { parse_mode: "HTML" }
+        );
         return;
       }
 
-      const target = msg.reply_to_message.from;
-      await bot!.promoteChatMember(msg.chat.id, target.id, {
+      await bot!.promoteChatMember(msg.chat.id, target.userId, {
         can_delete_messages: false,
         can_restrict_members: false,
         can_pin_messages: false,
@@ -2511,14 +2650,14 @@ Wajib Sub Diblokir: <b>${stats.forceJoinBlocked}</b>`;
 
       await bot!.sendMessage(
         msg.chat.id,
-        `${getUserMention(target)} telah <b>dicabut jabatan admin-nya</b>.`,
+        `${target.mentionHtml} telah <b>dicabut jabatan admin-nya</b>.`,
         { parse_mode: "HTML" }
       );
 
       await storage.addLog({
         chatId: msg.chat.id.toString(),
         action: "demote",
-        targetUser: getUserDisplayName(target),
+        targetUser: target.displayName,
         performedBy: getUserDisplayName(msg.from),
         details: "Dicabut jabatan admin",
       });
@@ -2714,7 +2853,8 @@ Wajib Sub Diblokir: <b>${stats.forceJoinBlocked}</b>`;
   }
 
   // /broadcast - Kirim pesan ke semua pengguna yang start bot
-  bot.onText(/\/broadcast([\s\S]+)/, async (msg, match) => {
+  // Support: text, reply media (photo, video, document, audio, sticker, animation, voice, video_note), caption
+  bot.onText(/\/broadcast(?:\s|$)(.*)/, async (msg, match) => {
     try {
       if (!msg.from) return;
 
@@ -2723,9 +2863,22 @@ Wajib Sub Diblokir: <b>${stats.forceJoinBlocked}</b>`;
         return;
       }
 
-      const rawMessage = (match![1] || "").trim();
-      if (!rawMessage) {
-        await bot!.sendMessage(msg.chat.id, "\u274C Pesan broadcast tidak boleh kosong!\n\nGunakan: <code>/broadcast pesan anda</code>", { parse_mode: "HTML" });
+      const rawArgs = (match![1] || "").trim();
+      const replyMsg = msg.reply_to_message;
+
+      const hasMedia = replyMsg && (replyMsg.photo || replyMsg.video || replyMsg.document || replyMsg.audio || replyMsg.animation || replyMsg.sticker || replyMsg.voice || replyMsg.video_note);
+      const replyText = replyMsg?.text || replyMsg?.caption || "";
+      const rawMessage = rawArgs || replyText;
+
+      if (!rawMessage && !hasMedia) {
+        await bot!.sendMessage(msg.chat.id,
+          "\u274C Pesan broadcast tidak boleh kosong!\n\n" +
+          "<b>Cara penggunaan:</b>\n" +
+          "1. <code>/broadcast pesan anda</code>\n" +
+          "2. Reply media/pesan + <code>/broadcast</code>\n" +
+          "3. Reply media + <code>/broadcast caption baru</code>",
+          { parse_mode: "HTML" }
+        );
         return;
       }
 
@@ -2736,9 +2889,42 @@ Wajib Sub Diblokir: <b>${stats.forceJoinBlocked}</b>`;
         return;
       }
 
+      let mediaType: string | null = null;
+      let mediaFileId: string | null = null;
+
+      if (hasMedia && replyMsg) {
+        if (replyMsg.photo && replyMsg.photo.length > 0) {
+          mediaType = "photo";
+          mediaFileId = replyMsg.photo[replyMsg.photo.length - 1].file_id;
+        } else if (replyMsg.animation) {
+          mediaType = "animation";
+          mediaFileId = replyMsg.animation.file_id;
+        } else if (replyMsg.video) {
+          mediaType = "video";
+          mediaFileId = replyMsg.video.file_id;
+        } else if (replyMsg.document) {
+          mediaType = "document";
+          mediaFileId = replyMsg.document.file_id;
+        } else if (replyMsg.audio) {
+          mediaType = "audio";
+          mediaFileId = replyMsg.audio.file_id;
+        } else if (replyMsg.sticker) {
+          mediaType = "sticker";
+          mediaFileId = replyMsg.sticker.file_id;
+        } else if (replyMsg.voice) {
+          mediaType = "voice";
+          mediaFileId = replyMsg.voice.file_id;
+        } else if (replyMsg.video_note) {
+          mediaType = "video_note";
+          mediaFileId = replyMsg.video_note.file_id;
+        }
+      }
+
       const statusMsg = await bot!.sendMessage(
         msg.chat.id,
-        `\u23F3 <b>Broadcast dimulai...</b>\n\nTarget: <b>${allUsers.length}</b> pengguna\nStatus: Mengirim...`,
+        `\u23F3 <b>Broadcast dimulai...</b>\n\nTarget: <b>${allUsers.length}</b> pengguna\n` +
+        (mediaType ? `Media: <b>${mediaType}</b>\n` : "") +
+        `Status: Mengirim...`,
         { parse_mode: "HTML" }
       );
 
@@ -2756,25 +2942,62 @@ Wajib Sub Diblokir: <b>${stats.forceJoinBlocked}</b>`;
           };
 
           let processedText = rawMessage;
-          processedText = parseMarkdownToHtml(processedText);
-          const { cleanText, buttons } = extractButtonUrls(processedText);
+          if (processedText) {
+            processedText = parseMarkdownToHtml(processedText);
+          }
+          const { cleanText, buttons } = extractButtonUrls(processedText || "");
           const fillings = applyFillings(cleanText, userObj);
 
-          const sendOptions: any = {
+          const baseOptions: any = {
             parse_mode: "HTML",
-            disable_web_page_preview: !fillings.preview,
             disable_notification: fillings.nonotif,
           };
 
           if (fillings.protect) {
-            sendOptions.protect_content = true;
+            baseOptions.protect_content = true;
           }
 
           if (buttons.length > 0) {
-            sendOptions.reply_markup = { inline_keyboard: buttons };
+            baseOptions.reply_markup = { inline_keyboard: buttons };
           }
 
-          await bot!.sendMessage(user.odId, fillings.text, sendOptions);
+          if (mediaType && mediaFileId) {
+            const captionOpts: any = { ...baseOptions };
+            if (fillings.text && mediaType !== "sticker" && mediaType !== "video_note") {
+              captionOpts.caption = fillings.text;
+            }
+
+            switch (mediaType) {
+              case "photo":
+                await bot!.sendPhoto(user.odId, mediaFileId, captionOpts);
+                break;
+              case "video":
+                await bot!.sendVideo(user.odId, mediaFileId, captionOpts);
+                break;
+              case "animation":
+                await bot!.sendAnimation(user.odId, mediaFileId, captionOpts);
+                break;
+              case "document":
+                await bot!.sendDocument(user.odId, mediaFileId, captionOpts);
+                break;
+              case "audio":
+                await bot!.sendAudio(user.odId, mediaFileId, captionOpts);
+                break;
+              case "sticker":
+                await bot!.sendSticker(user.odId, mediaFileId, baseOptions);
+                break;
+              case "voice":
+                await bot!.sendVoice(user.odId, mediaFileId, captionOpts);
+                break;
+              case "video_note":
+                await bot!.sendVideoNote(user.odId, mediaFileId as any, baseOptions);
+                break;
+              default:
+                await bot!.sendMessage(user.odId, fillings.text, { ...baseOptions, disable_web_page_preview: !fillings.preview });
+            }
+          } else {
+            await bot!.sendMessage(user.odId, fillings.text, { ...baseOptions, disable_web_page_preview: !fillings.preview });
+          }
           sent++;
         } catch (e: any) {
           const errStr = String(e).toLowerCase();
@@ -2798,6 +3021,7 @@ Wajib Sub Diblokir: <b>${stats.forceJoinBlocked}</b>`;
         await bot!.editMessageText(
           `\u2705 <b>Broadcast Selesai!</b>\n\n` +
           `\uD83D\uDCE8 <b>Total Target:</b> ${allUsers.length} pengguna\n` +
+          (mediaType ? `\uD83C\uDFA8 <b>Media:</b> ${mediaType}\n` : "") +
           `\u2705 <b>Terkirim:</b> ${sent}\n` +
           `\u274C <b>Gagal:</b> ${failed}\n` +
           `\uD83D\uDEAB <b>Blocked/Deaktif:</b> ${blocked}\n\n` +
@@ -3688,48 +3912,42 @@ Force Sub Diblokir: <b>${totalForceSub}</b>`;
           `<b>\uD83D\uDCE2 Broadcast Pesan</b>\n\n` +
           `\uD83D\uDCE8 Target: <b>${userCount}</b> pengguna yang pernah /start bot\n\n` +
           `<b>Cara Broadcast:</b>\n` +
-          `Kirim perintah di chat ini:\n` +
-          `<code>/broadcast pesan anda di sini</code>\n\n` +
+          `1. <code>/broadcast pesan anda</code>\n` +
+          `2. Reply media/pesan + <code>/broadcast</code>\n` +
+          `3. Reply media + <code>/broadcast caption baru</code>\n\n` +
           `<b>Contoh:</b>\n` +
           `<code>/broadcast Halo {first}! Ada update baru.</code>\n\n` +
 
+          `<b>\uD83D\uDCF7 Media yang Didukung (via Reply):</b>\n` +
+          `Foto, Video, GIF/Animasi, Dokumen, Audio, Sticker, Voice, Video Note\n\n` +
+
           `<b>\u2728 Variabel Isian (Fillings):</b>\n` +
-          `Anda bisa menyesuaikan isi pesan dengan data pengguna.\n\n` +
-          `Variabel yang didukung:\n` +
-          `\u2022 <code>{first}</code> - Nama depan pengguna\n` +
-          `\u2022 <code>{last}</code> - Nama belakang pengguna\n` +
-          `\u2022 <code>{fullname}</code> - Nama lengkap pengguna\n` +
-          `\u2022 <code>{username}</code> - Username pengguna. Jika tidak punya, mention pengguna.\n` +
-          `\u2022 <code>{mention}</code> - Mention pengguna dengan nama depannya\n` +
+          `\u2022 <code>{first}</code> - Nama depan\n` +
+          `\u2022 <code>{last}</code> - Nama belakang\n` +
+          `\u2022 <code>{fullname}</code> - Nama lengkap\n` +
+          `\u2022 <code>{username}</code> - Username/@mention\n` +
+          `\u2022 <code>{mention}</code> - Mention nama depan\n` +
           `\u2022 <code>{id}</code> - ID pengguna\n` +
           `\u2022 <code>{chatname}</code> - Nama chat\n` +
-          `\u2022 <code>{protect}</code> - Lindungi konten agar tidak bisa di-forward\n` +
-          `\u2022 <code>{preview}</code> - Aktifkan preview link dalam pesan\n` +
-          `\u2022 <code>{nonotif}</code> - Nonaktifkan notifikasi untuk pesan tersebut\n\n` +
+          `\u2022 <code>{protect}</code> - Lindungi forward\n` +
+          `\u2022 <code>{preview}</code> - Preview link\n` +
+          `\u2022 <code>{nonotif}</code> - Tanpa notifikasi\n\n` +
 
           `<b>\uD83C\uDFA8 Format Markdown:</b>\n` +
-          `Anda bisa memformat pesan menggunakan tebal, miring, garis bawah, dan lainnya.\n\n` +
-          `Format yang didukung:\n` +
-          `\u2022 <code>\`teks kode\`</code> - Font monospace. Tampil: <code>teks kode</code>\n` +
-          `\u2022 <code>_teks miring_</code> - Font miring. Tampil: <i>teks miring</i>\n` +
-          `\u2022 <code>*teks tebal*</code> - Font tebal. Tampil: <b>teks tebal</b>\n` +
-          `\u2022 <code>~coret~</code> - Teks dicoret. Tampil: <s>coret</s>\n` +
-          `\u2022 <code>||spoiler||</code> - Teks spoiler. Tampil: spoiler tersembunyi\n` +
-          `\u2022 <code>\`\`\`pre\`\`\`</code> - Blok kode preformat\n` +
-          `\u2022 <code>__garis bawah__</code> - Garis bawah. Tampil: <u>garis bawah</u>\n` +
-          `\u2022 <code>[hyperlink](example.com)</code> - Tautan. Tampil: hyperlink\n\n` +
+          `\u2022 <code>\`kode\`</code> \u2192 <code>kode</code>\n` +
+          `\u2022 <code>*tebal*</code> \u2192 <b>tebal</b>\n` +
+          `\u2022 <code>_miring_</code> \u2192 <i>miring</i>\n` +
+          `\u2022 <code>__garis bawah__</code> \u2192 <u>garis bawah</u>\n` +
+          `\u2022 <code>~coret~</code> \u2192 <s>coret</s>\n` +
+          `\u2022 <code>||spoiler||</code> \u2192 spoiler\n` +
+          `\u2022 <code>\`\`\`blok kode\`\`\`</code> \u2192 preformat\n` +
+          `\u2022 <code>[teks](url)</code> \u2192 hyperlink\n\n` +
 
           `<b>\uD83D\uDD18 Tombol URL:</b>\n` +
-          `\u2022 <code>[Tombol Saya](buttonurl://example.com)</code>\n` +
-          `  Membuat tombol bernama "Tombol Saya" yang membuka example.com\n\n` +
-          `Untuk menampilkan tombol di baris yang sama, gunakan format <code>:same</code>\n\n` +
-          `Contoh:\n` +
-          `<code>[Tombol 1](buttonurl://example.com)</code>\n` +
-          `<code>[Tombol 2](buttonurl://example.com:same)</code>\n` +
-          `<code>[Tombol 3](buttonurl://example.com)</code>\n\n` +
-          `Ini akan menampilkan Tombol 1 dan 2 di baris yang sama, dengan Tombol 3 di bawahnya.\n\n` +
+          `<code>[Tombol](buttonurl://url)</code>\n` +
+          `<code>[Tombol 2](buttonurl://url:same)</code> (sebaris)\n\n` +
 
-          `<i>Pesan akan dikirim ke semua pengguna yang pernah /start bot.</i>`,
+          `<i>Dikirim ke semua pengguna yang pernah /start bot.</i>`,
           {
             chat_id: chatId,
             message_id: msgId,
